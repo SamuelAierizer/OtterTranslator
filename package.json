@@ -1,0 +1,48 @@
+{
+  "name": "docx-translate-pipeline",
+  "version": "2.0.0",
+  "description": "High-fidelity DOCX translation pipeline preserving formatting and structure. Supports Google Translate (default) and local Ollama models for any language pair.",
+  "main": "dist/cli.js",
+  "type": "module",
+  "bin": {
+    "docx-translate": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.8.10",
+    "adm-zip": "^0.5.14",
+    "ollama": "^0.5.9",
+    "xpath": "^0.0.34"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.0"
+  },
+  "keywords": [
+    "docx",
+    "translation",
+    "document",
+    "word",
+    "google-translate",
+    "ollama",
+    "ai",
+    "formatting-preservation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/username/docx-translate-pipeline.git"
+  },
+  "bugs": {
+    "url": "https://github.com/username/docx-translate-pipeline/issues"
+  },
+  "homepage": "https://github.com/username/docx-translate-pipeline#readme"
+}
