@@ -5,6 +5,7 @@ import { reconstructParagraph } from './reconstructor.js';
 import { assertIsDocx, assertNoZipBomb, assertPartSize } from './guards.js';
 import { validateTags } from './tags.js';
 import { createBackend } from './backends/index.js';
+import { verifyTranslations } from './verify/index.js';
 import { TranslationBlockedError } from './errors.js';
 import type { TranslateOptions } from './types.js';
 
@@ -41,7 +42,19 @@ export async function translateDocx(buffer: Buffer, opts: TranslateOptions): Pro
   const total = allBlocks.length;
   const backend = createBackend(opts.backend ?? DEFAULT_BACKEND);
   const texts = allBlocks.map((block) => block.text);
-  const translatedTexts = await backend.translateBatch(texts, opts.from, opts.to, opts.signal);
+  let translatedTexts = await backend.translateBatch(texts, opts.from, opts.to, opts.signal);
+
+  // Stage 2: optional LLM review pass. Fails open by construction — `verifyTranslations` returns
+  // the stage-1 text for anything it cannot safely improve, so the document completes regardless.
+  if (opts.verify !== false) {
+    const reviewed = await verifyTranslations(texts, translatedTexts, {
+      from: opts.from,
+      to: opts.to,
+      providers: opts.verifyProviders,
+      signal: opts.signal,
+    });
+    translatedTexts = reviewed.texts;
+  }
 
   for (let i = 0; i < allBlocks.length; i++) {
     const block = allBlocks[i];
