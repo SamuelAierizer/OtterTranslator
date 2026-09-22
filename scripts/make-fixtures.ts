@@ -123,12 +123,16 @@ const fixtures: Record<string, Buffer> = {
     </w:p>`),
 
   'sdt.docx': buildDocx(`
-    <w:sdt>
-      <w:sdtPr><w:alias w:val="Field"/></w:sdtPr>
-      <w:sdtContent>
-        <w:p><w:r><w:t>Text wrapped in a structured document tag.</w:t></w:r></w:p>
-      </w:sdtContent>
-    </w:sdt>`)
+    <w:p>
+      <w:r><w:t xml:space="preserve">Paragraph with </w:t></w:r>
+      <w:sdt>
+        <w:sdtPr><w:alias w:val="Field"/></w:sdtPr>
+        <w:sdtContent>
+          <w:r><w:t>inline content control</w:t></w:r>
+        </w:sdtContent>
+      </w:sdt>
+      <w:r><w:t xml:space="preserve"> text.</w:t></w:r>
+    </w:p>`)
 };
 
 for (const [name, buffer] of Object.entries(fixtures)) {

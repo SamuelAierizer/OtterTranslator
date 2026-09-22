@@ -3,9 +3,10 @@ import { unescapeXml } from './xml-parser.js';
 const W_NAMESPACE = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
 interface Token {
-  type: 'text' | 'run' | 'br';
+  type: 'text' | 'run' | 'br' | 'container-open' | 'container-close' | 'placeholder';
   content?: string;
   styleId?: string;
+  containerId?: string;
 }
 
 /**
@@ -14,37 +15,42 @@ interface Token {
 export function parseTranslatedText(translatedText: string): Token[] {
   const tokens: Token[] = [];
   let index = 0;
-  
-  // Regex to match either a [fX]...[/fX] tag or a [br/] tag
-  const tagRegex = /\[(f\d+)\]([\s\S]*?)\[\/\1\]|(\[br\/\])/g;
-  
+
+  const tagRegex = /\[(f\d+)\]([\s\S]*?)\[\/\1\]|\[(h\d+)\]([\s\S]*?)\[\/\3\]|\[(o\d+)\/\]|(\[br\/\])/g;
+
   let match: RegExpExecArray | null;
   while ((match = tagRegex.exec(translatedText)) !== null) {
-    // Add text preceding the match
     if (match.index > index) {
       const textVal = translatedText.substring(index, match.index);
       tokens.push({ type: 'text', content: unescapeXml(textVal) });
     }
-    
-    if (match[3]) {
-      // It's a [br/] line break
+
+    if (match[8]) {
       tokens.push({ type: 'br' });
+    } else if (match[3]) {
+      const containerId = match[3];
+      tokens.push({ type: 'container-open', containerId });
+      const innerContent = match[4];
+      if (innerContent.trim()) {
+        tokens.push({ type: 'text', content: unescapeXml(innerContent) });
+      }
+      tokens.push({ type: 'container-close', containerId });
+    } else if (match[5]) {
+      tokens.push({ type: 'placeholder', styleId: match[5] });
     } else {
-      // It's a [fX]...[/fX]
       const styleId = match[1];
       const content = match[2];
       tokens.push({ type: 'run', styleId, content: unescapeXml(content) });
     }
-    
+
     index = tagRegex.lastIndex;
   }
-  
-  // Add trailing text
+
   if (index < translatedText.length) {
     const textVal = translatedText.substring(index);
     tokens.push({ type: 'text', content: unescapeXml(textVal) });
   }
-  
+
   return tokens;
 }
 
@@ -88,8 +94,23 @@ function createBreakRunNode(dom: Document): any {
 }
 
 /**
- * Reconstruct a paragraph's runs using the translated text and original style map
+ * Create a container node (hyperlink, ins, smartTag, sdt, fldSimple)
  */
+function createContainerNode(dom: Document, nodeName: string): any {
+  if (nodeName === 'w:hyperlink') {
+    return dom.createElementNS(W_NAMESPACE, 'w:hyperlink');
+  } else if (nodeName === 'w:ins') {
+    return dom.createElementNS(W_NAMESPACE, 'w:ins');
+  } else if (nodeName === 'w:smartTag') {
+    return dom.createElementNS(W_NAMESPACE, 'w:smartTag');
+  } else if (nodeName === 'w:sdt') {
+    return dom.createElementNS(W_NAMESPACE, 'w:sdt');
+  } else if (nodeName === 'w:fldSimple') {
+    return dom.createElementNS(W_NAMESPACE, 'w:fldSimple');
+  }
+  return null;
+}
+
 export function reconstructParagraph(
   dom: Document,
   wpNode: any,
@@ -97,60 +118,62 @@ export function reconstructParagraph(
   styleMap: Map<string, any>
 ): void {
   const tokens = parseTranslatedText(translatedText);
-  
-  // Extract paragraph properties (w:pPr) and non-translatable runs (e.g., runs containing drawings)
-  let pPrNode: any = null;
-  const preservedNodes: any[] = [];
 
+  let pPrNode: any = null;
   const childNodes = Array.from(wpNode.childNodes);
   for (const child of childNodes) {
     if ((child as any).nodeName === 'w:pPr') {
       pPrNode = child;
-    } else if ((child as any).nodeName === 'w:r') {
-      const hasDrawing = (child as any).getElementsByTagNameNS ? 
-        ((child as any).getElementsByTagNameNS(W_NAMESPACE, 'drawing').length > 0 || (child as any).getElementsByTagNameNS(W_NAMESPACE, 'object').length > 0) :
-        ((child as any).getElementsByTagName('w:drawing').length > 0 || (child as any).getElementsByTagName('w:object').length > 0);
-      
-      const hasText = (child as any).getElementsByTagNameNS ?
-        (child as any).getElementsByTagNameNS(W_NAMESPACE, 't').length > 0 :
-        (child as any).getElementsByTagName('w:t').length > 0;
-
-      if (hasDrawing || !hasText) {
-        preservedNodes.push(child);
-      }
-    } else {
-      // Keep other structural children like w:bookmarkStart, w:proofErr etc.
-      preservedNodes.push(child);
     }
   }
 
-  // Clear all children of the paragraph node
   while (wpNode.firstChild) {
     wpNode.removeChild(wpNode.firstChild);
   }
 
-  // Re-append paragraph properties first
   if (pPrNode) {
     wpNode.appendChild(pPrNode);
   }
 
-  // Append new translated runs
+  const elementStack: any[] = [wpNode];
+
   for (const token of tokens) {
+    const currentParent = elementStack[elementStack.length - 1];
+
     if (token.type === 'text') {
       const rNode = createRunNode(dom, token.content || '', null);
-      wpNode.appendChild(rNode);
+      currentParent.appendChild(rNode);
     } else if (token.type === 'run') {
       const originalRPr = styleMap.get(token.styleId || '');
       const rNode = createRunNode(dom, token.content || '', originalRPr);
-      wpNode.appendChild(rNode);
+      currentParent.appendChild(rNode);
     } else if (token.type === 'br') {
       const brNode = createBreakRunNode(dom);
-      wpNode.appendChild(brNode);
+      currentParent.appendChild(brNode);
+    } else if (token.type === 'container-open') {
+      const containerId = token.containerId || '';
+      const containerMeta = styleMap.get(containerId);
+      if (containerMeta) {
+        const containerNode = createContainerNode(dom, containerMeta.nodeName);
+        if (containerMeta.attributes) {
+          for (const [attrName, attrValue] of Object.entries(containerMeta.attributes)) {
+            (containerNode as any).setAttribute(attrName, attrValue as string);
+          }
+        }
+        currentParent.appendChild(containerNode);
+        elementStack.push(containerNode);
+      }
+    } else if (token.type === 'container-close') {
+      if (elementStack.length > 1) {
+        elementStack.pop();
+      }
+    } else if (token.type === 'placeholder') {
+      const placeholderId = token.styleId || '';
+      const preservedMeta = styleMap.get(placeholderId);
+      if (preservedMeta && preservedMeta.nodeName === 'preserved-run') {
+        const preservedRun = (preservedMeta.originalNode as any).cloneNode(true);
+        currentParent.appendChild(preservedRun);
+      }
     }
-  }
-
-  // Append any preserved drawing or non-text nodes at the end to ensure they remain in the layout
-  for (const node of preservedNodes) {
-    wpNode.appendChild(node);
   }
 }
