@@ -37,20 +37,11 @@ export interface Job {
 export interface QuotaUsage {
   id: string;
   provider: string;
-  user_id: string | null;
   month: string;
   characters_used: number;
   created_at: string;
 }
 
-export interface QuotaStore {
-  checkAndIncrement(
-    provider: string,
-    month: string,
-    characters: number,
-    limit: number,
-    userId?: string
-  ): Promise<boolean>;
-  getUsage(provider: string, month: string, userId?: string): Promise<number>;
-  reset(provider: string, month: string): Promise<void>;
-}
+// The quota contract belongs to the engine — it is the engine that spends the budget, and the
+// server only supplies the storage. Re-exported here so server code has one place to import from.
+export type { QuotaStore } from '../engine/types.js';

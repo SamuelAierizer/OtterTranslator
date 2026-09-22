@@ -6,79 +6,88 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 import { initDb, closeDb } from '../src/server/db.ts';
 import { SqliteQuotaStore } from '../src/server/quota.ts';
+import { QuotaLedger, currentMonth } from '../src/engine/quota.ts';
+import { QuotaExhaustedError } from '../src/engine/errors.ts';
 
-test('quota: check and increment passes when under limit', async () => {
-  const testDb = path.join(os.tmpdir(), `otter-quota-${randomUUID()}.db`);
-  process.env.DB_PATH = testDb;
+async function withTempDb<T>(fn: (store: SqliteQuotaStore, dbPath: string) => Promise<T>): Promise<T> {
+  const dbPath = path.join(os.tmpdir(), `otter-quota-${randomUUID()}.db`);
+  process.env.DB_PATH = dbPath;
+  await initDb();
+  try {
+    return await fn(new SqliteQuotaStore(), dbPath);
+  } finally {
+    await closeDb();
+    await fs.unlink(dbPath).catch(() => {});
+  }
+}
 
-  const db = await initDb();
-  const store = new SqliteQuotaStore();
+test('quota: usage accumulates per provider and month', async () => {
+  await withTempDb(async (store) => {
+    await store.addUsage('microsoft-translator', '2026-09', 1000);
+    await store.addUsage('microsoft-translator', '2026-09', 500);
+    await store.addUsage('google-cloud', '2026-09', 200);
 
-  const canProceed = await store.checkAndIncrement('google', '2024-01', 1000, 100000);
-  assert.strictEqual(canProceed, true);
-
-  const usage = await store.getUsage('google', '2024-01');
-  assert.strictEqual(usage, 1000);
-
-  await closeDb();
-  await fs.unlink(testDb).catch(() => {});
+    assert.strictEqual(await store.getUsage('microsoft-translator', '2026-09'), 1500);
+    assert.strictEqual(await store.getUsage('google-cloud', '2026-09'), 200);
+  });
 });
 
-test('quota: check and increment fails when over limit', async () => {
-  const testDb = path.join(os.tmpdir(), `otter-quota-${randomUUID()}.db`);
-  process.env.DB_PATH = testDb;
+test('quota: a new calendar month starts from zero', async () => {
+  await withTempDb(async (store) => {
+    await store.addUsage('microsoft-translator', '2026-09', 1_999_999);
 
-  const db = await initDb();
-  const store = new SqliteQuotaStore();
-
-  await store.checkAndIncrement('google', '2024-01', 80000, 100000);
-
-  const canProceed = await store.checkAndIncrement('google', '2024-01', 30000, 100000);
-  assert.strictEqual(canProceed, false);
-
-  const usage = await store.getUsage('google', '2024-01');
-  assert.strictEqual(usage, 80000);
-
-  await closeDb();
-  await fs.unlink(testDb).catch(() => {});
+    assert.strictEqual(await store.getUsage('microsoft-translator', '2026-10'), 0);
+    assert.strictEqual(await store.getUsage('microsoft-translator', '2026-09'), 1_999_999);
+  });
 });
 
-test('quota: track per user quota', async () => {
-  const testDb = path.join(os.tmpdir(), `otter-quota-${randomUUID()}.db`);
-  process.env.DB_PATH = testDb;
+test('quota: counters survive a restart', async () => {
+  const dbPath = path.join(os.tmpdir(), `otter-quota-${randomUUID()}.db`);
+  process.env.DB_PATH = dbPath;
 
-  const db = await initDb();
-  const store = new SqliteQuotaStore();
+  try {
+    await initDb();
+    await new SqliteQuotaStore().addUsage('microsoft-translator', '2026-09', 12_345);
+    await closeDb();
 
-  const userId1 = 'user-1';
-  const userId2 = 'user-2';
-
-  await store.checkAndIncrement('google', '2024-01', 5000, 10000, userId1);
-  await store.checkAndIncrement('google', '2024-01', 3000, 10000, userId2);
-
-  const usage1 = await store.getUsage('google', '2024-01', userId1);
-  const usage2 = await store.getUsage('google', '2024-01', userId2);
-
-  assert.strictEqual(usage1, 5000);
-  assert.strictEqual(usage2, 3000);
-
-  await closeDb();
-  await fs.unlink(testDb).catch(() => {});
+    // Second "process": same file, fresh store instance.
+    await initDb();
+    const usage = await new SqliteQuotaStore().getUsage('microsoft-translator', '2026-09');
+    assert.strictEqual(usage, 12_345, 'usage must not reset when the process restarts');
+    await closeDb();
+  } finally {
+    await fs.unlink(dbPath).catch(() => {});
+  }
 });
 
-test('quota: reset clears usage', async () => {
-  const testDb = path.join(os.tmpdir(), `otter-quota-${randomUUID()}.db`);
-  process.env.DB_PATH = testDb;
+test('quota: the ledger refuses a request that would exceed the monthly limit', async () => {
+  await withTempDb(async (store) => {
+    const ledger = new QuotaLedger('microsoft-translator', 1000, store);
 
-  const db = await initDb();
-  const store = new SqliteQuotaStore();
+    await ledger.assertAvailable(600);
+    await ledger.charge(600);
 
-  await store.checkAndIncrement('google', '2024-01', 5000, 10000);
-  await store.reset('google', '2024-01');
+    assert.strictEqual(await ledger.remaining(), 400);
+    await assert.rejects(() => ledger.assertAvailable(401), QuotaExhaustedError);
+    await ledger.assertAvailable(400);
+  });
+});
 
-  const usage = await store.getUsage('google', '2024-01');
-  assert.strictEqual(usage, 0);
+test('quota: the ledger charges the month it is called in', async () => {
+  await withTempDb(async (store) => {
+    await new QuotaLedger('google-cloud', 500_000, store).charge(700);
+    assert.strictEqual(await store.getUsage('google-cloud', currentMonth()), 700);
+  });
+});
 
-  await closeDb();
-  await fs.unlink(testDb).catch(() => {});
+test('quota: reset clears a single provider-month', async () => {
+  await withTempDb(async (store) => {
+    await store.addUsage('google-cloud', '2026-09', 900);
+    await store.addUsage('google-cloud', '2026-10', 100);
+
+    await store.reset('google-cloud', '2026-09');
+
+    assert.strictEqual(await store.getUsage('google-cloud', '2026-09'), 0);
+    assert.strictEqual(await store.getUsage('google-cloud', '2026-10'), 100);
+  });
 });

@@ -12,11 +12,6 @@ import type { Job } from './types.js';
 import type { QuotaStore } from './types.js';
 
 const OUTPUT_DIR = process.env.OUTPUT_DIR || '/data/outputs';
-const PROVIDERS = ['google', 'ollama'];
-const MONTHLY_LIMITS: Record<string, number> = {
-  google: 500000,
-  ollama: 0,
-};
 
 export class JobQueue {
   private quotaStore: QuotaStore;
@@ -67,32 +62,16 @@ export class JobQueue {
       const inputPath = path.join(OUTPUT_DIR, job.input_filename);
       const buffer = await fs.readFile(inputPath);
 
-      // Check quota
-      const now = new Date();
-      const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-      const provider = process.env.TRANSLATION_BACKEND || 'google';
-      const limit = MONTHLY_LIMITS[provider] || 500000;
-
-      const canProceed = await this.quotaStore.checkAndIncrement(
-        provider,
-        month,
-        buffer.length,
-        limit,
-        job.user_id
-      );
-
-      if (!canProceed) {
-        await db.run(
-          `UPDATE jobs SET status = 'quota_exhausted', completed_at = datetime('now') WHERE id = ?`,
-          [job.id]
-        );
-        return;
-      }
-
-      // Translate
+      // Quota is metered by the backends in translatable characters, against each provider's own
+      // monthly limit — the queue must not pre-charge, it has only the zipped byte count and no
+      // idea which provider will serve the job. Exhaustion arrives as QuotaExhaustedError below.
       const outputBuffer = await translateDocx(buffer, {
         from: job.from_lang,
         to: job.to_lang,
+        quota: this.quotaStore,
+        onTagMismatch: (blockId, partName) => {
+          console.warn(`job ${job.id}: kept source text for ${partName} block ${blockId}`);
+        },
       });
 
       // Write output
@@ -102,31 +81,31 @@ export class JobQueue {
 
       // Update job
       await db.run(
-        `UPDATE jobs SET status = 'done', output_filename = ?, completed_at = datetime('now') WHERE id = ?`,
-        [outputFilename, job.id]
+        `UPDATE jobs SET status = 'done', output_filename = ?, completed_at = ? WHERE id = ?`,
+        [outputFilename, new Date().toISOString(), job.id]
       );
     } catch (err: unknown) {
       const db = getDb();
       let status = 'failed';
       let message = 'Unknown error';
 
-      if (err instanceof Error) {
+      if (err instanceof QuotaExhaustedError) {
+        status = 'quota_exhausted';
+        message = 'Out of free monthly translation budget. Retry after the quota resets.';
+      } else if (err instanceof TranslationBlockedError) {
+        status = 'blocked';
+        message = 'The translation provider refused the request.';
+      } else if (err instanceof DocumentTooLargeError) {
+        message = 'Document is too large.';
+      } else if (err instanceof MalformedDocxError) {
+        message = 'Document is not a readable DOCX file.';
+      } else if (err instanceof Error) {
         message = err.message;
-        const name = (err as any).code || err.name;
-        if (name === 'TRANSLATION_BLOCKED') {
-          status = 'blocked';
-        } else if (name === 'QUOTA_EXHAUSTED') {
-          status = 'quota_exhausted';
-        } else if (name === 'DOCUMENT_TOO_LARGE') {
-          message = 'Document is too large';
-        } else if (name === 'MALFORMED_DOCX') {
-          message = 'Document is malformed';
-        }
       }
 
       await db.run(
-        `UPDATE jobs SET status = ?, error_message = ?, completed_at = datetime('now') WHERE id = ?`,
-        [status, message, job.id]
+        `UPDATE jobs SET status = ?, error_message = ?, completed_at = ? WHERE id = ?`,
+        [status, message, new Date().toISOString(), job.id]
       );
     }
   }

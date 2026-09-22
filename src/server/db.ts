@@ -140,15 +140,15 @@ async function setupSchema(): Promise<void> {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    -- Keyed by provider and calendar month, matching how the providers meter their free tiers.
+    -- Deliberately not per user: the budget being protected is the account's, not a person's.
     CREATE TABLE IF NOT EXISTS quota_usage (
       id TEXT PRIMARY KEY,
       provider TEXT NOT NULL,
-      user_id TEXT,
       month TEXT NOT NULL,
       characters_used INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(provider, user_id, month),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      UNIQUE(provider, month)
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);

@@ -6,49 +6,27 @@
 import type { TranslationBackend } from '../backend.js';
 import { BackendTimeoutError, QuotaExhaustedError, TranslationBlockedError } from '../errors.js';
 import { RateLimiter } from '../rate-limit.js';
+import { InMemoryQuotaStore, QuotaLedger } from '../quota.js';
+import type { QuotaStore } from '../types.js';
 
 const GOOGLE_API_KEY = process.env.GOOGLE_CLOUD_API_KEY;
 const GOOGLE_ENDPOINT = 'https://translation.googleapis.com/language/translate/v2';
 
-interface CharQuota {
-  used: number;
-  limit: number;
-  resetDay: number;
-}
+export const GOOGLE_CLOUD_MONTHLY_CHAR_LIMIT = 500_000;
 
 export class GoogleCloudTranslationBackend implements TranslationBackend {
   name = 'google-cloud';
   private rateLimiter: RateLimiter;
-  private charQuota: CharQuota;
+  private ledger: QuotaLedger;
   private blockedUntil: number = 0;
   private consecutiveErrors: number = 0;
 
-  constructor(private apiKey: string = GOOGLE_API_KEY || '') {
+  constructor(
+    private apiKey: string = GOOGLE_API_KEY || '',
+    quota: QuotaStore = new InMemoryQuotaStore()
+  ) {
     this.rateLimiter = new RateLimiter({ tokensPerSecond: 50 });
-    this.charQuota = this.initializeQuota();
-  }
-
-  private initializeQuota(): CharQuota {
-    const today = new Date();
-    return {
-      used: 0,
-      limit: 500_000,
-      resetDay: today.getDate(),
-    };
-  }
-
-  private checkMonthlyReset(): void {
-    const today = new Date();
-    const currentDay = today.getDate();
-    if (currentDay !== this.charQuota.resetDay) {
-      this.charQuota.resetDay = currentDay;
-      this.charQuota.used = 0;
-    }
-  }
-
-  private getAvailableQuota(): number {
-    this.checkMonthlyReset();
-    return Math.max(0, this.charQuota.limit - this.charQuota.used);
+    this.ledger = new QuotaLedger(this.name, GOOGLE_CLOUD_MONTHLY_CHAR_LIMIT, quota);
   }
 
   async translateBatch(
@@ -64,13 +42,7 @@ export class GoogleCloudTranslationBackend implements TranslationBackend {
     }
 
     const totalChars = texts.reduce((sum, t) => sum + t.length, 0);
-    const availableQuota = this.getAvailableQuota();
-
-    if (totalChars > availableQuota) {
-      throw new QuotaExhaustedError(
-        `Google Cloud quota exhausted: need ${totalChars}, have ${availableQuota}`
-      );
-    }
+    await this.ledger.assertAvailable(totalChars);
 
     const results: string[] = [];
 
@@ -79,7 +51,8 @@ export class GoogleCloudTranslationBackend implements TranslationBackend {
 
       const translated = await this.translateSingle(text, from, to, signal);
       results.push(translated);
-      this.charQuota.used += text.length;
+      // Charged only once the provider accepted the text, so a throw above cannot double-count.
+      await this.ledger.charge(text.length);
       this.consecutiveErrors = 0;
     }
 
@@ -110,10 +83,13 @@ export class GoogleCloudTranslationBackend implements TranslationBackend {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': this.apiKey,
         },
+        // v2 REST names these `source`/`target`/`format`; `format: 'text'` keeps the API from
+        // HTML-escaping the bracket tags that carry formatting through the pipeline.
         body: JSON.stringify({
           q: text,
-          sourceLanguage: from,
-          targetLanguage: to,
+          source: from,
+          target: to,
+          format: 'text',
         }),
         signal: signal || controller.signal,
       });

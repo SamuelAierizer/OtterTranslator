@@ -1,102 +1,77 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { createBackend } from '../src/engine/backends/index.js';
-import { QuotaExhaustedError, TranslationBlockedError } from '../src/engine/errors.js';
+import { createBackend, IdentityBackend } from '../src/engine/backends/index.ts';
+import { InMemoryQuotaStore } from '../src/engine/quota.ts';
+import { QuotaExhaustedError, TranslationBlockedError } from '../src/engine/errors.ts';
 
-test('Composite: routes through primary when available', async () => {
-  const originalFetch = globalThis.fetch;
-  let primaryCalled = false;
+async function withFetch<T>(impl: typeof fetch, fn: () => Promise<T>): Promise<T> {
+  const original = globalThis.fetch;
+  globalThis.fetch = impl;
   try {
-    globalThis.fetch = (async (url: string) => {
-      if (url.includes('microsofttranslator')) {
-        primaryCalled = true;
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({
-            data: [{ translations: [{ text: 'Szia!' }] }],
-          }),
-        } as Response;
-      }
-      throw new Error('Should not call secondary');
-    }) as any;
-
-    const backend = createBackend(undefined, 'test-ms', 'test-gc');
-    await backend.translateBatch(['Hello'], 'en', 'hu');
-    assert.strictEqual(primaryCalled, true, 'Primary should be called');
+    return await fn();
   } finally {
-    globalThis.fetch = originalFetch;
+    globalThis.fetch = original;
   }
+}
+
+test('composite: the primary serves the request when it succeeds', async () => {
+  const calls: string[] = [];
+  const backend = createBackend(undefined, {
+    msKey: 'ms',
+    gcKey: 'gc',
+    quota: new InMemoryQuotaStore(),
+  });
+
+  const result = await withFetch(
+    (async (url: string | URL) => {
+      calls.push(url.toString());
+      return new Response(JSON.stringify([{ translations: [{ text: 'Szia!' }] }]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+    () => backend.translateBatch(['Hello'], 'en', 'hu')
+  );
+
+  assert.deepStrictEqual(result, ['Szia!']);
+  assert.strictEqual(calls.length, 1);
+  assert.ok(calls[0].includes('microsofttranslator'));
 });
 
-test('Composite: falls back to secondary on primary quota exhausted', async () => {
-  const originalFetch = globalThis.fetch;
-  let secondaryCalled = false;
-  try {
-    globalThis.fetch = (async (url: string) => {
-      if (url.includes('microsofttranslator')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({
-            // Return a negative case that exhausts primary quota
-            error: 'quota exhausted',
-          }),
-        } as Response;
-      }
-      if (url.includes('googleapis')) {
-        secondaryCalled = true;
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({
-            data: { translations: [{ translatedText: 'Szia!' }] },
-          }),
-        } as Response;
-      }
-      throw new Error('Unknown URL: ' + url);
-    }) as any;
+test('composite: sustained 429s from both providers end as TranslationBlockedError', async () => {
+  const backend = createBackend(undefined, {
+    msKey: 'ms',
+    gcKey: 'gc',
+    quota: new InMemoryQuotaStore(),
+  });
 
-    // Create primary backend with small quota to trigger exhaustion
-    const backend = createBackend(undefined, 'test-ms', 'test-gc');
-    // Try a large translation to exhaust primary
-    try {
-      await backend.translateBatch(['a'.repeat(3_000_000)], 'en', 'hu');
-    } catch (err) {
-      // Expected — either primary throws or reaches secondary
-      if (err instanceof QuotaExhaustedError) {
-        // Both might be exhausted
-        assert(true);
-      }
-    }
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('Composite: throws when all backends blocked', async () => {
-  const originalFetch = globalThis.fetch;
-  try {
-    globalThis.fetch = (async (url: string) => {
-      return {
+  await withFetch(
+    (async () =>
+      new Response('rate limited', {
         status: 429,
-        ok: false,
         statusText: 'Too Many Requests',
-        json: async () => ({ error: 'rate limited' }),
-      } as Response;
-    }) as any;
-
-    const backend = createBackend(undefined, 'test-ms', 'test-gc');
-    try {
-      await backend.translateBatch(['Hello'], 'en', 'hu');
-      assert.fail('Should throw TranslationBlockedError or QuotaExhaustedError');
-    } catch (err) {
-      assert(
-        err instanceof QuotaExhaustedError || err instanceof TranslationBlockedError,
-        'Should be a quota or blocking error'
-      );
+      })) as typeof fetch,
+    async () => {
+      // The first two 429s surface as QuotaExhaustedError and route to the overflow provider; the
+      // circuit breaker trips on the third, and with no provider left the job is blocked.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          await backend.translateBatch(['Hello'], 'en', 'hu');
+        } catch (err) {
+          if (err instanceof TranslationBlockedError) return;
+          assert.ok(
+            err instanceof QuotaExhaustedError,
+            `unexpected error before the breaker tripped: ${err}`
+          );
+        }
+      }
+      assert.fail('the circuit breaker never tripped');
     }
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  );
+});
+
+test("composite: the 'identity' name bypasses the providers entirely", async () => {
+  const backend = createBackend('identity');
+  assert.ok(backend instanceof IdentityBackend);
+  assert.deepStrictEqual(await backend.translateBatch(['Hello'], 'en', 'hu'), ['Hello']);
 });

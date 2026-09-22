@@ -40,7 +40,8 @@ export async function translateDocx(buffer: Buffer, opts: TranslateOptions): Pro
   }
 
   const total = allBlocks.length;
-  const backend = createBackend(opts.backend ?? DEFAULT_BACKEND);
+  const backend =
+    opts.backendImpl ?? createBackend(opts.backend ?? DEFAULT_BACKEND, { quota: opts.quota });
   const texts = allBlocks.map((block) => block.text);
   let translatedTexts = await backend.translateBatch(texts, opts.from, opts.to, opts.signal);
 
@@ -56,19 +57,33 @@ export async function translateDocx(buffer: Buffer, opts: TranslateOptions): Pro
     translatedTexts = reviewed.texts;
   }
 
+  let tagMismatches = 0;
+
   for (let i = 0; i < allBlocks.length; i++) {
     const block = allBlocks[i];
     const translatedText = translatedTexts[i];
 
+    // A translation that mangled its formatting tags would reconstruct into corrupted markup, so
+    // the paragraph keeps its source text instead. Failing the whole document over one bad
+    // paragraph is worse — but so is substituting silently, hence the callback.
+    let finalText = translatedText;
     if (!validateTags(block.text, translatedText)) {
-      throw new TranslationBlockedError(
-        `Tag mismatch between source and translated text for block "${block.id}"`
-      );
+      finalText = block.text;
+      tagMismatches++;
+      opts.onTagMismatch?.(block.id, block.partName);
     }
 
     const dom = docHandler.getDOM(block.partName);
-    reconstructParagraph(dom, block.wpNode, translatedText, block.styleMap);
+    reconstructParagraph(dom, block.wpNode, finalText, block.styleMap);
     opts.onProgress?.(i + 1, total, block.partName);
+  }
+
+  // Isolated mismatches are tolerable; every paragraph failing means the backend returned something
+  // systematically wrong, and the "translated" document would be the untouched source. Fail loudly.
+  if (total > 0 && tagMismatches === total) {
+    throw new TranslationBlockedError(
+      `Every paragraph failed tag validation (${total}); the backend returned unusable output`
+    );
   }
 
   return docHandler.toBuffer();

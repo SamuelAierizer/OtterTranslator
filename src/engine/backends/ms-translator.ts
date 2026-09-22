@@ -7,50 +7,28 @@
 import type { TranslationBackend } from '../backend.js';
 import { BackendTimeoutError, QuotaExhaustedError, TranslationBlockedError } from '../errors.js';
 import { RateLimiter } from '../rate-limit.js';
+import { InMemoryQuotaStore, QuotaLedger } from '../quota.js';
+import type { QuotaStore } from '../types.js';
 
 const MS_REGION = process.env.MS_TRANSLATOR_REGION || 'eastus';
 const MS_KEY = process.env.MS_TRANSLATOR_KEY;
 const MS_ENDPOINT = `https://${MS_REGION}.api.cognitive.microsofttranslator.com`;
 
-interface CharQuota {
-  used: number;
-  limit: number;
-  resetDay: number; // day of month (1-31)
-}
+export const MS_MONTHLY_CHAR_LIMIT = 2_000_000;
 
 export class MicrosoftTranslatorBackend implements TranslationBackend {
   name = 'microsoft-translator';
   private rateLimiter: RateLimiter;
-  private charQuota: CharQuota;
+  private ledger: QuotaLedger;
   private blockedUntil: number = 0;
   private consecutiveErrors: number = 0;
 
-  constructor(private apiKey: string = MS_KEY || '') {
+  constructor(
+    private apiKey: string = MS_KEY || '',
+    quota: QuotaStore = new InMemoryQuotaStore()
+  ) {
     this.rateLimiter = new RateLimiter({ tokensPerSecond: 100 });
-    this.charQuota = this.initializeQuota();
-  }
-
-  private initializeQuota(): CharQuota {
-    const today = new Date();
-    return {
-      used: 0,
-      limit: 2_000_000,
-      resetDay: today.getDate(),
-    };
-  }
-
-  private checkMonthlyReset(): void {
-    const today = new Date();
-    const currentDay = today.getDate();
-    if (currentDay !== this.charQuota.resetDay) {
-      this.charQuota.resetDay = currentDay;
-      this.charQuota.used = 0;
-    }
-  }
-
-  private getAvailableQuota(): number {
-    this.checkMonthlyReset();
-    return Math.max(0, this.charQuota.limit - this.charQuota.used);
+    this.ledger = new QuotaLedger(this.name, MS_MONTHLY_CHAR_LIMIT, quota);
   }
 
   private splitText(text: string, maxChars: number): string[] {
@@ -85,13 +63,7 @@ export class MicrosoftTranslatorBackend implements TranslationBackend {
     }
 
     const totalChars = texts.reduce((sum, t) => sum + t.length, 0);
-    const availableQuota = this.getAvailableQuota();
-
-    if (totalChars > availableQuota) {
-      throw new QuotaExhaustedError(
-        `Microsoft quota exhausted: need ${totalChars}, have ${availableQuota}`
-      );
-    }
+    await this.ledger.assertAvailable(totalChars);
 
     const results: string[] = [];
 
@@ -104,6 +76,8 @@ export class MicrosoftTranslatorBackend implements TranslationBackend {
       for (const chunk of chunks) {
         const translated = await this.translateSingle(chunk, from, to, signal);
         translatedChunks.push(translated);
+        // Charged per accepted chunk: a request that throws below must not count against the tier.
+        await this.ledger.charge(chunk.length);
       }
 
       // Preserve leading/trailing whitespace
@@ -112,7 +86,6 @@ export class MicrosoftTranslatorBackend implements TranslationBackend {
       const combined = translatedChunks.join('');
       results.push(leadingSpace + combined.trim() + trailingSpace);
 
-      this.charQuota.used += text.length;
       this.consecutiveErrors = 0;
     }
 
