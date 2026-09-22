@@ -52,14 +52,14 @@ for (const fixtureName of fixtureNames) {
   });
 }
 
-test('translateDocx wires the full pipeline through to the not-yet-implemented backend/guard stubs', async () => {
+test('translateDocx runs the full pipeline end to end against the identity backend', async () => {
   const inputBuffer = fs.readFileSync(path.join(FIXTURES_DIR, 'plain-paragraph.docx'));
 
-  // guards.ts / tags.ts / backends/index.ts are intentionally left as
-  // `throw new Error('not implemented: ...')` stubs for other agents to fill in.
-  // This proves the orchestrator reaches them rather than silently skipping them.
-  await assert.rejects(
-    () => translateDocx(inputBuffer, { from: 'en', to: 'es' }),
-    /not implemented/
-  );
+  const outputBuffer = await translateDocx(inputBuffer, {
+    from: 'en',
+    to: 'es',
+    backend: 'identity',
+  });
+
+  assertOpenableDocx(outputBuffer);
 });

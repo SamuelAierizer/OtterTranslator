@@ -23,6 +23,8 @@ export interface CLIOptions {
 export interface TranslateOptions {
   from: string;
   to: string;
+  /** Backend name passed to `createBackend`; defaults to the quota-routed composite. */
+  backend?: string;
   onProgress?: (done: number, total: number, part: string) => void;
   signal?: AbortSignal;
 }

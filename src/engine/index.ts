@@ -39,7 +39,7 @@ export async function translateDocx(buffer: Buffer, opts: TranslateOptions): Pro
   }
 
   const total = allBlocks.length;
-  const backend = createBackend(DEFAULT_BACKEND);
+  const backend = createBackend(opts.backend ?? DEFAULT_BACKEND);
   const texts = allBlocks.map((block) => block.text);
   const translatedTexts = await backend.translateBatch(texts, opts.from, opts.to, opts.signal);
 
