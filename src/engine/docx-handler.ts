@@ -1,6 +1,7 @@
 import fs from 'fs';
 import AdmZip from 'adm-zip';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
+import { assertIsDocx, assertNoZipBomb, assertPartSize } from './guards.js';
 
 /**
  * Handles DOCX file operations: loading, parsing, and saving
@@ -29,7 +30,9 @@ export class DocxHandler {
    * @returns Array of part names that were loaded (document.xml, headers, footers)
    */
   load(): string[] {
+    assertIsDocx(this.buffer);
     this.zip = new AdmZip(this.buffer);
+    assertNoZipBomb(this.zip);
     this.doms.clear();
     
     // List all files inside the docx zip
@@ -41,14 +44,20 @@ export class DocxHandler {
       .filter((name: string) => 
         name === 'word/document.xml' || 
         /^word\/header\d+\.xml$/.test(name) || 
-        /^word\/footer\d+\.xml$/.test(name)
+        /^word\/footer\d+\.xml$/.test(name) ||
+        name === 'word/footnotes.xml' ||
+        name === 'word/endnotes.xml'
       );
 
     const parser = new DOMParser();
 
     for (const part of targetParts) {
-      const content = this.zip.readAsText(part);
-      const dom = parser.parseFromString(content, 'application/xml');
+      const content = this.zip.readFile(part);
+      if (!content) {
+        throw new Error(`Unable to read DOCX part: ${part}`);
+      }
+      assertPartSize(content.length);
+      const dom = parser.parseFromString(content.toString('utf-8'), 'application/xml');
       this.doms.set(part, dom);
     }
 

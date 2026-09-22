@@ -4,13 +4,13 @@ export class OllamaTranslator {
   private modelName: string;
   private systemPrompt: string;
 
-  constructor(modelName: string = 'gemma2:9b', systemPrompt: string = '') {
+  constructor(modelName: string = 'gemma2:9b', systemPrompt: string = '', private from = 'Romanian', private to = 'Hungarian') {
     this.modelName = modelName;
     this.systemPrompt = systemPrompt || 
-      `You are an expert professional translator from Romanian to Hungarian.
+      `You are an expert professional translator from ${this.from} to ${this.to}.
 
 CRITICAL INSTRUCTIONS:
-1. Translate the Romanian text to Hungarian.
+1. Translate the ${this.from} text to ${this.to}.
 2. Preserve ALL format placeholders like '[f1]...[/f1]' or '[br/]' in your translation exactly.
 3. The placeholders MUST wrap the grammatically correct corresponding terms in Hungarian. Do not drop, modify, or translate the text inside the brackets (e.g., '[f1]' must remain '[f1]', never '[f_szam]' or '[1]').
 4. Output ONLY the raw translated Hungarian text. 
@@ -63,7 +63,7 @@ CRITICAL INSTRUCTIONS:
       const text = texts[i];
       if (!text || text.trim() === '') {
         results[i] = '';
-      } else if (!/[a-zA-ZăâîşţĂÂÎŞŢ]/.test(text)) {
+      } else if (!/\p{L}/u.test(text)) {
         // Only symbols/numbers
         results[i] = text;
       } else {
@@ -93,8 +93,8 @@ CRITICAL INSTRUCTIONS:
             messages: [
               {
                 role: 'system',
-                content: `You are an expert professional translator from Romanian to Hungarian.
-Translate this JSON array of Romanian strings into Hungarian.
+                content: `You are an expert professional translator from ${this.from} to ${this.to}.
+Translate this JSON array of ${this.from} strings into ${this.to}.
 
 CRITICAL INSTRUCTIONS:
 1. Translate the strings accurately and professionally into Hungarian.
@@ -117,25 +117,15 @@ CRITICAL INSTRUCTIONS:
 
           let rawContent = response.message.content.trim();
           
-          // Debug log to see what Qwen actually returned
-          console.log(`[DEBUG] Raw Qwen response (first 800 chars):`, rawContent.substring(0, 800));
-          console.log(`[DEBUG] Response length:`, rawContent.length);
-          
           // Clean up markdown codeblocks if present
           if (rawContent.includes('```')) {
             rawContent = rawContent.replace(/```[a-zA-Z]*\n?/g, '').replace(/```$/g, '').trim();
-            console.log(`[DEBUG] After markdown cleanup:`, rawContent.substring(0, 800));
           }
 
           let parsed: any;
           try {
             parsed = JSON.parse(rawContent);
-            console.log(`[DEBUG] Parsed JSON type:`, Array.isArray(parsed) ? 'Array' : typeof parsed);
-            if (typeof parsed === 'object' && !Array.isArray(parsed)) {
-              console.log(`[DEBUG] Object keys:`, Object.keys(parsed));
-            }
           } catch (parseErr: any) {
-            console.log(`[DEBUG] JSON parse failed:`, parseErr.message);
             throw parseErr;
           }
           
@@ -201,7 +191,7 @@ CRITICAL INSTRUCTIONS:
     if (!text || text.trim() === '') return '';
 
     // If text has no letters/words, don't waste LLM time
-    if (!/[a-zA-ZăâîşţĂÂÎŞŢ]/.test(text)) {
+    if (!/\p{L}/u.test(text)) {
       return text;
     }
 
@@ -260,7 +250,7 @@ CRITICAL INSTRUCTIONS:
       const response = await ollama.chat({
         model: this.modelName,
         messages: [
-          { role: 'system', content: 'Translate this Romanian text to Hungarian. Output ONLY the translated text with NO explanations, notes, or quotes.' },
+          { role: 'system', content: `Translate this ${this.from} text to ${this.to}. Output ONLY the translated text with NO explanations, notes, or quotes.` },
           { role: 'user', content: cleanText }
         ],
         options: { temperature: 0.1 }
