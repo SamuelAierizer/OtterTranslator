@@ -1,226 +1,116 @@
-# OtterTranslator — Web Service Plan
+# OtterTranslator — Implementation Status and Remaining Plan
 
-**Status:** Planning complete, no implementation started.
-**Date:** 2026-08-06
-**Context:** Turning the existing DOCX translation CLI into a self-hosted web service deployed via Coolify on a small VPS.
+**Updated:** 2026-11-02
+**Status:** Core translation pipeline and backend service implemented; browser experience and deployment unfinished.
+**Evidence:** Current source, Git history through `76dcf01`, local worktree inventory, and live GitHub repository inspection. This replaces the obsolete “planning complete, no implementation started” status.
 
-This document is self-contained. It captures the codebase analysis, every scoping decision and the reasoning behind it, the implementation plan, and the open questions that must be answered before building. A reader with no prior context should be able to pick up from here.
+## TL;DR
 
----
+We have a tested DOCX translation engine, quota-routed Microsoft/Google Cloud translation, an optional LLM review pass, and a Fastify/SQLite service with authentication primitives and upload/job/download APIs. The TypeScript build and all 81 tests passed during the 2026-11-02 status check.
 
-## 1. Starting point: what the repo contains
+We still need a browser UI, actual magic-link email delivery, reliable job lifecycle and file cleanup, HTTP integration coverage, provider setup, and Docker/Coolify deployment. Existing tests do not establish production readiness or live translation quality. No deployment or working provider credentials were verified in this review.
 
-~700 lines of TypeScript, one commit (`5cf598f initial git release`), zero tests, CLI-only.
+## 1. Scope and constraints
 
-### Pipeline
+The intended product remains a self-hosted DOCX translator for a small known group (roughly 5–50 people), deployed on a small VPS through Coolify.
 
-`unzip → parse XML → serialize paragraphs to tagged text → translate → reconstruct runs → rezip`
+- DOCX only; other file formats are outside v1.
+- Preserve formatting, document structure, hyperlinks, and inline object positions.
+- One translation job at a time; SQLite and an in-process worker, without Redis or Postgres.
+- Intended host budget: 1–2 GB RAM and 1 vCPU; no local translation model on that host.
+- Intended upload cap: 2 MiB, with decompression and XML size guards.
+- Intended retention: 24 hours for uploaded and generated documents.
+- Allowlisted email authentication through single-use magic links.
+- Target API spend: €0, with provider budgets enforced. Account configuration and current provider terms still need verification before deployment.
+- Optional LLM corrections must preserve tags; unsafe or failed review responses retain the machine translation.
+- Keep the CLI as a local entry point into the same engine.
 
-| File | Role |
-|---|---|
-| `src/cli.ts` | Arg parsing, orchestration, ANSI progress bar, batch loop |
-| `src/docx-handler.ts` | adm-zip load/save, XML part discovery, DOM cache |
-| `src/xml-parser.ts` | Run merging, paragraph → tagged text serialization |
-| `src/google-translator.ts` | Free Google endpoint client + bracket cleanup |
-| `src/ollama-translator.ts` | Local LLM client, batch JSON mode, tag validation |
-| `src/reconstructor.ts` | Tagged text → DOCX runs, style reapplication |
-| `src/types.ts` | `TranslationBlock`, `CLIOptions` |
+## 2. What is implemented
 
-### What is genuinely good and should be preserved
-
-- **Run merging** (`xml-parser.ts:21`) — solves the "split runs" problem where Word splits one word across multiple `w:r` nodes (`[Spu]` + `[berit]`). Most naive DOCX translators get this wrong.
-- **The `[f1]…[/f1]` tag scheme** — sending lightweight bracket tags instead of raw XML to a translation engine. Repositionable across differing word orders, and survives translation far better than markup.
-- **Save via `zip.updateFile`** (`docx-handler.ts:85`) — only the touched XML parts are rewritten; everything else in the archive survives byte-for-byte. Correct approach.
-- **Tag validation with retry and fallback** (`ollama-translator.ts:24`) — reusable for the verification layer.
-
-The engine is solid. It is not a product: no HTTP layer, no job model, no auth, no limits, no cleanup, and it writes progress bars to stdout and calls `process.exit` on failure.
-
-### Known defects (identified during analysis, not yet fixed)
-
-**Critical — visible document corruption:**
-
-1. **Hyperlink text is never translated, and gets relocated.** `xml-parser.ts:79` iterates only direct `w:r` children of the paragraph. Anything wrapped in `w:hyperlink`, `w:ins` (tracked-change insertions), or `w:smartTag` is invisible to serialization. Then `reconstructor.ts:121-124` sends those elements to `preservedNodes`, and `reconstructor.ts:153` appends them at the **end** of the paragraph. Net effect: hyperlinked text stays in the source language *and* physically moves to the end of the paragraph.
-
-2. **Inline images/objects move to the end of the paragraph.** Same mechanism — a `w:r` containing `w:drawing` or `w:object` is pushed to `preservedNodes` (`reconstructor.ts:118`) and appended last. An image sitting mid-sentence ends up after the text.
-
-**Moderate:**
-
-3. **Hardcoded Romanian→Hungarian prompts** in `ollama-translator.ts` at `:10` (constructor default), `:96` (batch system prompt), and `:263` (stripped-tag fallback) — directly contradicts the CLI's advertised language-agnostic behaviour. The Ollama engine silently ignores `--from`/`--to`.
-
-4. **Non-Latin script detection is broken** for the same reason — `ollama-translator.ts:66` and `:204` gate on `/[a-zA-ZăâîşţĂÂÎŞŢ]/`, so Cyrillic, Greek, CJK, Arabic, etc. text is classified as "symbols only" and returned untranslated.
-
-5. **Leftover `[DEBUG]` console logging** at `ollama-translator.ts:121-138`.
-
-6. **Unhandled document parts** — `docx-handler.ts:33-37` only picks up `word/document.xml`, `word/header*.xml`, `word/footer*.xml`. Missing: `footnotes.xml`, `endnotes.xml`, `comments.xml`, SmartArt (`word/diagrams/`), and document metadata (`docProps/core.xml`). Text boxes *are* covered incidentally, since `getElementsByTagName('w:p')` recurses into `w:txbxContent`.
-
-**Deployment-blocking:**
-
-7. **Uncontrolled concurrency.** `cli.ts:247` fires `Promise.all` across a batch of 15 with only a 100ms sleep between batches. From a datacenter IP this is the fastest possible way to get the endpoint blocked.
-
----
-
-## 2. Decisions
-
-All decided in session on 2026-08-06.
-
-| Question | Decision | Why |
+| Area | Current implementation | Limits / unfinished work |
 |---|---|---|
-| Audience | **Small known group** (~5–50 people) | Not public. Low volume is what makes the free Google endpoint survivable. |
-| Auth | **Magic link by email**, against an allowlist | No passwords to manage or leak. Gives per-user identity for job history and quotas. |
-| Translation backend | **Keep free Google endpoint**, add fallbacks/limiting | €0 constraint. Low volume makes blocking unlikely, though never guaranteed. |
-| Behaviour when blocked | **Fail loudly, no fallback** | No paid backstop exists by definition at €0. Self-hosted LibreTranslate was ruled out by the 1 GB RAM limit anyway. Consistent, simplest v1. |
-| LLM verification | **Auto-correct silently** | User just gets a better document; no report UI to build. |
-| Budget | **Strictly €0** on APIs | Free tiers only. |
-| Data sensitivity | **Somewhat — prefer no-train** | Business documents. Requires a free-tier LLM provider that does not train on API traffic. This is a hard constraint on provider choice. |
-| VPS | **1–2 GB RAM, 1 vCPU** | The binding constraint on the entire architecture. |
-| Document size | **≤2 MB / ~30 pages** | Small letters/reports/contracts. Load-bearing for the memory budget — do not raise casually. |
-| Retention | **24 hours, then auto-purge** | Balance of re-download convenience vs. not hoarding colleagues' documents. |
-| Fidelity fixes in v1 | **Hyperlinks + inline object position; defer footnotes/comments** | Relocation is visible corruption that generates complaints immediately. Footnotes/comments are additive and can wait. |
-| Format scope | **DOCX only** | PDF/PPTX/XLSX not in scope. |
+| Engine library | `translateDocx(buffer, options)` with typed errors, abort signal support, progress and tag-mismatch callbacks | Progress callbacks currently run during reconstruction, after translation/review |
+| DOCX fidelity | Tagged formatting runs, container wrappers for hyperlinks and other nested content, positional inline-object placeholders | Real translated documents still need visual QA across representative layouts |
+| Document parts | Main document, headers, footers, footnotes, endnotes; text boxes through recursive paragraph discovery | Comments, SmartArt, and metadata translation are not implemented |
+| Validation | Required DOCX ZIP parts, archive decompression guards, XML part size checks before parsing; XXE regression coverage | HTTP upload validation currently checks size and ZIP signature only; full structural checks happen in the worker |
+| Machine translation | Microsoft Translator primary, Google Cloud secondary on quota exhaustion or provider blocking; request batching and limiting | Credentials/account configuration and live provider behavior remain unverified |
+| Quotas | SQLite usage ledger by provider and calendar month, injected into the engine; charge after successful calls | This protects shared provider budgets; per-user job admission limits are not implemented |
+| LLM review | Optional Cerebras primary / Groq fallback, structured responses, batching, rate limiting, tag checks and safe fallback | Enabled by configured provider keys; no configured provider means review is skipped; live quality/privacy/account setup still requires validation |
+| HTTP service | Fastify, cookies, multipart upload, job status and download routes, `/healthz` with queue depth and provider quotas | No browser page, no job-list/history endpoint, no persisted progress |
+| Authentication | Email allowlist, expiring magic tokens, sessions, expiry cleanup | Request endpoint logs the magic link; SMTP delivery is still a TODO |
+| Jobs | SQLite-backed queued/running/done/error states; serialized worker | Interrupted running jobs are not recovered on startup; stop does not await active work |
+| Retention | Hourly purge of outputs and rows for successful jobs completed over 24 hours ago | Uploaded inputs and failed-job artifacts are not purged |
+| CLI | Calls the shared engine and writes a translated DOCX | Help and engine labels are stale; parsed engine/model/batch options are not passed into the shared engine |
 
-### Consequences of the 1–2 GB / 1 vCPU constraint
+### Backend choice supersedes the original plan
 
-This rules things out cleanly and should not be revisited without new hardware:
+The original plan depended on Google's undocumented free web endpoint. September research recorded blocked requests, and the implemented backend factory now selects the Microsoft/Google Cloud composite for every backend name except `identity`. The identity backend supports offline tests. The old Google web endpoint and Ollama code are not the active CLI/server routing path.
 
-- **No Redis, no Postgres.** SQLite + an in-process queue. Saves 200+ MB that isn't available.
-- **Strictly one job at a time.** 1 vCPU is already saturated by xmldom parsing; concurrency only makes everything slower and raises OOM risk.
-- **No self-hosted translation engine** (LibreTranslate/Argos needs ~2 GB plus per-language-pair models). No local LLM (needs ~8 GB minimum, and CPU inference would be hours per document).
-- **No frontend build step.** Server-rendered HTML plus vanilla JS.
+The source currently encodes provider budgets and review defaults. Treat the research in [spike-backend.md](docs/spike-backend.md) and [spike-llm.md](docs/spike-llm.md) as historical findings, not current guarantees of pricing, availability, model support, or privacy terms.
 
-### Memory reasoning (why the 2 MB cap matters)
+## 3. Git and GitHub status
 
-`adm-zip` loads the whole archive into a Buffer. DOCX XML compresses roughly 10:1. xmldom's DOM representation runs roughly 5–15× the size of the source XML string.
+Checked on 2026-11-02:
 
-- A 2 MB upload → `document.xml` in the low single-digit MB → peak DOM on the order of 100 MB. **Fits comfortably.**
-- A 5 MB upload → potentially 50 MB of XML → 250–750 MB of DOM. **Marginal to fatal on this box.**
+- Local and live remote `main` point to `76dcf013b37d910317265a29595dd7955ea85f6f`.
+- Only one registered worktree exists: the main project checkout. It was clean before this documentation update.
+- Old local branches `worktree-feat+backend` and `worktree-feat-server` retain their original commits. Their relevant files were ported onto `main`, with corrections, rather than merged wholesale; the landing commit messages explicitly document this.
+- `fix/fidelity` and the scaffold/research branches point to earlier commits already reachable from `main`.
+- GitHub has only the `main` branch and no issues or pull requests, open or closed. There is no GitHub backlog capturing the remaining work.
 
-Guard both the upload size *and* the decompressed part size, checked **before** parsing.
+### Landed implementation milestones
 
----
+All entries below landed on 2026-09-22.
 
-## 3. Target architecture
+| Commit | Result |
+|---|---|
+| `7fc5e59` | Engine scaffold, shared tag guard and backend/batch fixes |
+| `4e33209` | DOCX and Ollama hardening |
+| `12385c5` | Container/hyperlink and inline-object fidelity fixes |
+| `dd302a1` | Microsoft + Google Cloud quota-routed backends; ported backend branch work |
+| `ac09d1a` | Fastify/SQLite service and auth; ported server branch work, corrected DB-path and expiry defects |
+| `b862107` | Optional stage-2 LLM review pass |
+| `76dcf01` | Persistent quota wiring, safe tag-mismatch handling, retention timestamp fixes, health reporting and Google request corrections |
 
-One Node process. No Redis, no Postgres, no frontend build.
+## 4. Remaining work, in delivery order
 
-```
-Browser ──upload──▶ Fastify ──▶ SQLite (jobs table)
-   │                              │
-   └──poll /api/jobs/:id          ▼
-                          in-process worker (serialized, 1 at a time)
-                                  │
-                    ┌─────────────┴─────────────┐
-                    ▼                           ▼
-            Google batch translate      LLM verify pass
-            (multi-q, rate limited)     (batched, tag-guarded)
-                    └─────────────┬─────────────┘
-                                  ▼
-                        /data/outputs/<id>.docx  ──24h cron──▶ purge
-```
+### A. Finish the service contract and lifecycle
 
-**Stack choices:**
+- [ ] Make upload parsing consume the file and language fields reliably in one multipart flow; cover field ordering and enforce an explicit 2 MiB multipart limit.
+- [ ] Validate DOCX structure before accepting a job, using the engine's existing guards where appropriate.
+- [ ] Persist useful progress and stage information so polling can show translation/review status. Surface retained-source paragraphs to the user rather than only logging them.
+- [ ] Recover interrupted `running` jobs on startup with a defined retry policy; await in-flight work during graceful shutdown.
+- [ ] Enforce 24-hour retention for inputs, outputs, failed jobs and orphaned files; handle file deletion failures explicitly.
+- [ ] Add per-user job admission limits alongside the existing shared provider quotas.
+- [ ] Complete auth integration: SMTP delivery, normalized allowlist entries, atomic single-use token consumption, and session-cookie behavior including path and expiry units.
+- [ ] Add meaningful HTTP/worker integration tests covering upload language fields and limits, auth and ownership, job completion, restart recovery, and full retention.
 
-- **HTTP:** Fastify + `@fastify/multipart`. Lighter than Express, better streaming multipart handling.
-- **UI:** Server-rendered HTML, vanilla `fetch` polling for progress. The entire UI is an upload form, a progress bar, and a download link.
-- **DB:** `better-sqlite3` — synchronous, near-zero overhead, single file on the volume. Tables: `users`, `sessions`, `magic_tokens`, `jobs`.
-- **Queue:** A loop pulling the oldest `queued` row from SQLite. State persisted in the DB so a container restart resumes rather than loses work. Roughly 60 lines; the correct amount of machinery for 1 vCPU.
-- **Email:** `nodemailer` over plain SMTP, configured by env var. Works with any free provider's SMTP or an existing mailbox — no vendor SDK, no lock-in.
-- **Container:** Multi-stage `node:22-alpine`, non-root user.
+### B. Build the browser experience
 
-### Engine refactor
+- [ ] Serve a login page and wire the magic-link email flow.
+- [ ] Add a DOCX upload form with source and target languages.
+- [ ] Poll job status and present progress, provider/quota failures, and the final download link.
+- [ ] Provide access to recent jobs during the retention window, with an authenticated job-list endpoint if needed.
+- [ ] Decide whether email-on-completion belongs in v1; magic-link email delivery is required regardless.
 
-Extract `src/engine/` as a pure library, decoupled from stdout and `process.exit`:
+### C. Make configuration and local use accurate
 
-```ts
-translateDocx(buffer: Buffer, opts: {
-  from: string; to: string;
-  onProgress?: (done: number, total: number, part: string) => void;
-  signal?: AbortSignal;
-}): Promise<Buffer>
-```
+- [ ] Update README and CLI help to describe the implemented provider routing and required credentials.
+- [ ] Remove or correctly wire CLI options that currently have no effect; correct the hardcoded Google engine label.
+- [ ] Add a documented server start command and example environment configuration for database/output paths, origin, allowlist, SMTP, translation keys and optional review keys.
+- [ ] Configure provider accounts and verify current free-tier limits, billing controls, review model support, and no-training requirements before sending business documents.
 
-Typed errors (`TranslationBlockedError`, `DocumentTooLargeError`, `MalformedDocxError`) instead of `process.exit`. `src/cli.ts` becomes a thin wrapper over the same library — the CLI keeps working, which preserves a fast local path for debugging fidelity bugs without going through the web UI.
+### D. Package, validate and deploy
 
-Keep the translation backend behind a clean interface regardless of whether an alternative is ever used. It costs almost nothing now and turns a future swap to DeepL free tier or paid Google into a config change rather than a rewrite.
+- [ ] Add a multi-stage Dockerfile, non-root runtime, healthcheck, and explicit Node memory limit suitable for the VPS.
+- [ ] Document Coolify deployment, persistent `/data` storage, HTTPS/origin configuration, and operational recovery.
+- [ ] Run authenticated end-to-end tests with real provider credentials, including the priority language pairs and representative DOCX files.
+- [ ] Visually compare translated documents in Word or an equivalent renderer: tables, hyperlinks, inline images, headers/footers, notes, and text boxes.
+- [ ] Measure peak memory and completion time on the target VPS with near-limit documents; verify quota exhaustion, provider failure, restart behavior, and cleanup there.
+- [ ] Deploy and confirm health, login email delivery, upload, translation, download, and retention in the hosted environment.
 
-### Fidelity fixes
+## 5. Verification baseline
 
-**Hyperlinks** (`xml-parser.ts:79`) — recurse into `w:hyperlink`, `w:ins`, `w:smartTag` containers rather than only visiting direct `w:r` children. Emit a container tag (e.g. `[h1]…[/h1]`) so the wrapper element, including its `r:id` relationship attribute, can be rebuilt intact during reconstruction.
+On 2026-11-02, `npm run build` passed and `npm test` passed all 81 tests. Coverage includes fixture round trips, parser/reconstructor fidelity, tag mismatch fallback, security guards, backend routing/quotas/rate limits, database/auth primitives, and LLM review/provider behavior.
 
-**Inline object position** (`reconstructor.ts:153`) — use the pattern the codebase already established for `[br/]`: emit a positional placeholder (e.g. `[o1/]`) where the object sits, let it ride through translation, and reinsert the original preserved node wherever the placeholder ends up. Consistent with the existing tag design rather than bolted on.
-
-**Cleanup** — remove `[DEBUG]` logs; parameterize the three hardcoded RO→HU prompts; replace the Latin-only regex script check with something that doesn't misclassify non-Latin scripts as untranslatable.
-
-Each fix needs a fixture DOCX and a round-trip test. There are currently zero tests; these are where the first ones go.
-
-### Rate-limit strategy
-
-This determines whether the service works at all.
-
-1. **Remove the `Promise.all`** at `cli.ts:247`. Replace with a serialized queue plus a token-bucket limiter.
-2. **Batch via repeated `q` parameters** — `?q=para1&q=para2&…` on `translate_a/single`. Turns ~600 requests into ~30 for a 30-page document. **Unverified — see §5.** This is the single highest-leverage change if it holds.
-3. **Circuit breaker** — on repeated 429/403, halt the job, mark it `blocked`, surface a clear message. Prevents one bad job from burning the shared IP for everyone.
-
-### LLM verification
-
-Runs after Google. Batches ~20 paragraph-pairs (source + translation) per call; the model returns corrected translations.
-
-**The safety rule that makes silent auto-correction shippable:** the verifier may only improve, never corrupt. Every LLM-returned string passes through the existing tag validation (`ollama-translator.ts:24` — reuse it). On any tag mismatch, length mismatch, or parse failure, that paragraph silently keeps Google's output. Because corrections are invisible to the user, a verifier that quietly mangles formatting would be strictly worse than no verifier at all.
-
-Skip verification for paragraphs that are pure numbers, single words, or under ~15 characters — meaningful call-volume reduction for free.
-
-At roughly 15 RPM on a typical free tier, a 30-page document costs about 2–3 minutes of verification. Acceptable for an async job.
-
-### Hardening
-
-Non-negotiable once other people can upload:
-
-- Validate the file is genuinely a DOCX — check for `[Content_Types].xml` and `word/document.xml`, not the file extension.
-- **Zip-bomb guard:** read `entry.header.size` (uncompressed) and reject before extraction. A 200 KB upload can decompress to gigabytes and take the box down.
-- Confirm `@xmldom/xmldom` does not resolve external entities on the pinned version — XXE is the obvious attack against a document parser.
-- `--max-old-space-size=768` so the process fails predictably instead of being OOM-killed alongside everything else on the VPS.
-- Per-user job rate limit; single-use, short-lived magic-link tokens; non-root container user.
-
----
-
-## 4. Implementation phases
-
-**Phase 0 — Verification spike (do first, ~half a day).** Three assumptions can each invalidate parts of the design. All are cheap to test and expensive to discover late. See §5.
-
-**Phase 1 — Engine as a library.** Extract `src/engine/`, add typed errors and progress callbacks, keep the CLI working, fix hyperlinks and inline-object position, write the first tests with fixture documents.
-
-**Phase 2 — Web service.** Fastify, SQLite schema, persisted job queue, magic-link auth, upload with validation, progress polling, download, 24h purge cron.
-
-**Phase 3 — Verification layer.** Provider client, batching, tag-guarded correction with fallback to Google output.
-
-**Phase 4 — Ship.** Multi-stage Dockerfile, healthcheck endpoint, Coolify config with a persistent volume for `/data`, env vars, structured logging. Coolify handles Traefik and Let's Encrypt.
-
-Phases 1 and 2 are independent — Phase 2 can be built against a stub engine to stand the service up early.
-
----
-
-## 5. Open items — verify before building
-
-Three assumptions were made and should be tested rather than trusted:
-
-1. **Does multi-`q` batching work on `translate_a/single`, and what is the response shape?** Reasonably likely, but the entire rate-limit strategy rests on it. If it fails, the fallback is low concurrency plus a token bucket, and blocking becomes materially more likely.
-
-2. **Which free LLM tier genuinely does not train on API data?** Provider terms change; this was deliberately not asserted from memory. Someone needs to read the current terms for the candidate providers before committing. This is a hard constraint given the "somewhat sensitive / prefer no-train" decision. Candidates worth checking: Groq, Cerebras, Mistral, Google AI Studio.
-
-3. **Does the Google endpoint respond at all from the target VPS's IP range?** Worth a single `curl` from the box before building anything on top of it. If that IP range is already burned, the plan needs reworking.
-
-Also still unspecified (did not block planning, but will need answers):
-
-- Which language pairs matter most. The hardcoded Ollama prompts suggest a real RO→HU use case.
-- Whether an email-on-completion notification is wanted in addition to in-page progress polling (nearly free, since SMTP is already wired for magic links).
-
----
-
-## 6. Honest risks
-
-**The free Google endpoint is an undocumented internal API** (`translate_a/single?client=gtx`) accessed with a spoofed browser User-Agent (`google-translator.ts:14-22`). It can stop working with no notice and no recourse, and it is against Google's Terms of Service — a defensible position for a small internal tool, and not one if this ever grows or becomes public. The €0 constraint means there is no backstop when it breaks. Low volume makes it *likely* to keep working; nothing makes it *guaranteed*.
-
-**Free-tier LLMs and confidential documents are in tension.** Most free tiers are paid for with your data. The "prefer no-train" decision narrows provider choice considerably and needs verification (§5.2) rather than assumption.
-
-**Silent auto-correction hides failures.** The tag-validation guard is what keeps this safe. Do not relax it.
-
-**Memory, not CPU, is the failure mode.** The 2 MB document cap and the decompressed-size guard are the two things standing between the service and an OOM kill. Treat raising them as an architectural change, not a config tweak.
+This baseline uses offline fixtures and mocked providers. It does not prove that the complete HTTP flow, SMTP delivery, real provider accounts, deployed container, visual translation quality, or VPS memory budget work. Repeat the existing checks after code changes and add integration coverage for the unfinished flows above.
