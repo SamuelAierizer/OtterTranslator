@@ -28,15 +28,8 @@ test('guards: reject non-docx file', async () => {
   }
 });
 
-test('guards: accept valid docx header', async () => {
-  const validBuffer = Buffer.alloc(100);
-  validBuffer[0] = 0x50;
-  validBuffer[1] = 0x4b;
-  validBuffer[2] = 0x03;
-  validBuffer[3] = 0x04;
-
-  const result = await validateUpload(validBuffer);
-  assert.strictEqual(result, 'docx');
+test('guards: reject a ZIP signature without DOCX structure', async () => {
+  await assert.rejects(validateUpload(Buffer.from([0x50,0x4b,0x03,0x04,0,0,0,0])));
 });
 
 test('guards: reject empty file', async () => {

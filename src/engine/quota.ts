@@ -43,8 +43,8 @@ export class InMemoryQuotaStore implements QuotaStore {
  * One provider's slice of a quota store: checks a request against the remaining monthly budget and
  * records what was actually spent.
  *
- * Charging happens after a request succeeds, never before, so a failed or partially-failed request
- * cannot double-count against the budget.
+ * Network attempts are reserved before sending. Uncertain/failed responses keep their reservation
+ * to avoid undercounting accepted requests after a crash or timeout.
  */
 export class QuotaLedger {
   constructor(
@@ -65,6 +65,16 @@ export class QuotaLedger {
       throw new QuotaExhaustedError(
         `${this.provider} quota exhausted: need ${characters} characters, ${remaining} remain this month`
       );
+    }
+  }
+
+  /** Reserve before network I/O; retain on failure because the provider may have accepted it. */
+  async reserve(characters: number): Promise<void> {
+    if (this.store.reserveUsage) {
+      if (!await this.store.reserveUsage(this.provider, currentMonth(), characters, this.limit)) throw new QuotaExhaustedError(`${this.provider} monthly budget exhausted`);
+    } else {
+      await this.assertAvailable(characters);
+      await this.charge(characters);
     }
   }
 

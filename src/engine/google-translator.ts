@@ -26,7 +26,7 @@ export async function translateTextGoogle(
         throw new Error(`Google Translate HTTP Error ${res.status}: ${res.statusText}`);
       }
 
-      const data = await res.json();
+      const data = await res.json() as any;
       if (!data || !data[0]) {
         throw new Error('Invalid response structure from Google Translate');
       }

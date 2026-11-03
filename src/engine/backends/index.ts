@@ -72,6 +72,8 @@ class CompositeBackend implements TranslationBackend {
 export function createBackend(name?: string, options: CreateBackendOptions = {}): TranslationBackend {
   if (name === 'identity') return new IdentityBackend();
 
+  if (name && !['composite', 'google'].includes(name)) throw new Error(`Unknown translation backend: ${name}`);
+
   // Every other name resolves to the quota-routed composite: the free Google web endpoint is
   // dead (see backends/google-web.ts) and there is no third provider to select between.
   return new CompositeBackend({

@@ -48,11 +48,11 @@ export class GoogleCloudTranslationBackend implements TranslationBackend {
 
     for (const text of texts) {
       if (signal?.aborted) throw new Error('Translation aborted');
+      if (!text.trim()) { results.push(text); continue; }
 
       const translated = await this.translateSingle(text, from, to, signal);
       results.push(translated);
-      // Charged only once the provider accepted the text, so a throw above cannot double-count.
-      await this.ledger.charge(text.length);
+
       this.consecutiveErrors = 0;
     }
 
@@ -71,10 +71,10 @@ export class GoogleCloudTranslationBackend implements TranslationBackend {
 
     await this.rateLimiter.acquire(1);
 
+    if (signal?.aborted) throw new Error('Translation aborted');
+    await this.ledger.reserve(text.length);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
-
-    if (signal?.aborted) throw new Error('Translation aborted');
 
     try {
       const response = await fetch(GOOGLE_ENDPOINT, {
@@ -91,7 +91,7 @@ export class GoogleCloudTranslationBackend implements TranslationBackend {
           target: to,
           format: 'text',
         }),
-        signal: signal || controller.signal,
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
       });
 
       if (response.status === 429 || response.status === 403) {
@@ -108,7 +108,9 @@ export class GoogleCloudTranslationBackend implements TranslationBackend {
       }
 
       const data = await response.json() as { data?: { translations?: Array<{ translatedText: string }> } };
-      return data.data?.translations?.[0]?.translatedText || text;
+      const translated = data.data?.translations?.[0]?.translatedText;
+      if (typeof translated !== 'string' || !translated) throw new Error('Google Cloud returned no translated text');
+      return translated;
     } catch (err) {
       if (err instanceof Error) {
         if (err.name === 'AbortError') {

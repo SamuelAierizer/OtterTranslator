@@ -1,3 +1,4 @@
+import type { Document } from '@xmldom/xmldom';
 import { DOMParser } from '@xmldom/xmldom';
 import { TranslationBlock } from './types.js';
 

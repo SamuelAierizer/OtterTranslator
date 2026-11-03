@@ -1,207 +1,77 @@
-# DOCX High-Fidelity Translation Pipeline
+# OtterTranslator
 
-A professional-grade, layout-preserving document translation system for Microsoft Word documents (`.docx`). Translates text while preserving formatting, structure, styles, tables, headers, footers, and nested elements.
+A small, self-hosted DOCX translator for an allowlisted group. Server-rendered HTML and vanilla JavaScript provide email sign-in, upload, language selection, progress, recent jobs and downloads. Fastify, SQLite and one in-process worker keep the deployment small.
 
-**Dual Engine Support:**
-- **Google Translate (Default)**: Lightning-fast, high-quality translation using the free public API. No credentials required.
-- **Local Ollama**: For offline privacy or custom model support (requires Ollama server).
+Microsoft Translator is primary; Google Cloud Translation Basic is the fallback on quota exhaustion or provider blocking. The undocumented Google web endpoint and local Ollama are not supported by the v1 CLI/server. Translation credentials are required. No paid service is provisioned by this repository.
 
-**Language Agnostic**: Supports any language pair (e.g., English→Spanish, Romanian→Hungarian, French→German, etc.).
+## Local setup
 
----
+Use Node **22.12 or newer** and npm. SQLite installation may need Python, make and a C++ compiler when a prebuilt binary is unavailable.
 
-## Features
-
-- **High-Fidelity Formatting Preservation**: Bold, italic, underline, fonts, colors, and styles are preserved exactly
-- **Structure Preservation**: Tables, lists, headers, footers, and nested elements remain intact
-- **Run Merging**: Automatically merges split text runs (e.g., `[Spu]`, `[berit]` → `[Spuberit]`) before translation
-- **Grammar-Safe Tag Tracking**: Uses lightweight bracket tags (`[f1]...[/f1]`, `[br/]`) that the translation engine can reposition correctly for different word orders
-- **Drawing & Image Preservation**: Layout elements, drawings, and images are protected and preserved
-- **Real-Time Progress**: Beautiful progress bar with ETA estimation
-- **Error Recovery**: Automatic retries and fallbacks for translation errors
-- **Batch Processing**: High-speed concurrent translation for fast processing
-
----
-
-## Installation
-
-```bash
-npm install
-```
-
-### Build (for distribution)
-
-```bash
+```sh
+npm ci
+cp .env.example .env
+# Edit .env: EMAIL_ALLOWLIST, SMTP settings, MS_TRANSLATOR_KEY and region.
 npm run build
+npm run server
 ```
 
----
+Open http://localhost:3000. `ORIGIN` must exactly match the public browser origin. Production requires HTTPS. `npm run server:dev` runs the TypeScript source. The server commands load `.env`; direct CLI invocation requires exported environment variables or Node's `--env-file=.env` option.
 
-## Usage
+For a complete **offline demonstration** without email/provider accounts:
 
-### Basic Usage (Google Translate - Recommended)
+```sh
+# Terminal 1: local SMTP sink; prints messages to this terminal, never sends them externally
+npm run mailbox
+# In .env set EMAIL_ALLOWLIST=you@example.com, SMTP_HOST=127.0.0.1,
+# SMTP_PORT=2525, SMTP_REQUIRE_TLS=false, SMTP_FROM=you@example.com,
+# TRANSLATION_BACKEND=identity. Leave SMTP_USER/PASS empty.
+# Terminal 2
+npm run server
+```
 
-Translate from English to Spanish:
+Request a sign-in link, copy the URL printed by the local mailbox, open it, then upload a DOCX. **Identity mode checks formatting and the product flow; its output is not translated.** Restore `TRANSLATION_BACKEND=composite` and real SMTP settings for actual use.
 
-```bash
+## Configuration and limits
+
+See [.env.example](.env.example) for every setting. Mail uses Nodemailer SMTP submission: port 587 with required STARTTLS by default; port 465 requires `SMTP_SECURE=true`. Existing mail infrastructure can be used. Production magic links are delivered by SMTP and are never logged. Configure sender authorization/SPF/DKIM with your mail administrator.
+
+- DOCX only, one file, **2 MiB** compressed upload; 100 MiB total decompressed archive, 2,048 ZIP entries, 2 MiB per translated XML part and 8 MiB combined translated XML. Malformed XML and DTDs are rejected before admission.
+- One worker / one server replica. Each user may have 2 queued/running jobs and submit 10 jobs in a rolling 24 hours; global active queue cap is 50. Failed jobs count toward admission. Do not run a CLI translation concurrently with the server against the same provider accounts.
+- Inputs, results and job history expire **24 hours after upload**. API access stops at expiry; startup and minute-by-minute maintenance remove files and rows, including failed/queued jobs and old orphan artifacts. Physical deletion can lag by up to one minute. Filesystem deletion errors are logged and retried per artifact without blocking startup or cleanup of other jobs; monitor them. Backups and provider retention are separate.
+- Magic links expire after 15 minutes and are consumed atomically once. Sign-in is restricted to trimmed, case-normalized `EMAIL_ALLOWLIST` entries; removing an entry revokes access through existing sessions. Three requests per email per 15 minutes, admitted atomically even under concurrent requests; sessions last 30 days with HttpOnly, SameSite=Lax, root-path cookies and Secure on HTTPS.
+- Progress reports validation, translation batches, optional review and reconstruction. It is a stage estimate, not an ETA. Source-retained paragraphs are counted and shown with the result.
+- Queued jobs survive a restart. Running jobs are marked interrupted, never automatically retried. Shutdown stops admission, aborts active provider work and awaits the worker before closing SQLite. Jobs have a 30-minute timeout. A retry is a new upload.
+
+## Formatting and review
+
+The engine handles main document text, tables, headers/footers, footnotes/endnotes, hyperlinks, text boxes and inline-object positions. Formatting tags are validated: unsafe paragraphs retain their original source text; a result with all paragraphs rejected fails. Optional LLM review keeps machine translation when review fails or changes tags. Comments, SmartArt and metadata are not translated. Pagination can change as translated text grows; review output before distribution.
+
+Server review is **off by default**, even with keys set. Enable `ENABLE_LLM_REVIEW=true` only after checking account billing, model access and privacy controls. Review uses configured Cerebras then Groq; absent keys skip that provider. Current account entitlements cannot be inferred from an API key. See [provider verification](docs/providers.md).
+
+## CLI
+
+```sh
+node --env-file=.env dist/cli.js input.docx output.docx --from ro --to hu
+node dist/cli.js input.docx output.docx --backend identity
+node dist/cli.js --help
+```
+
+Options: `--from` (en), `--to` (ro), `--backend composite|identity`, and `--review` (explicit optional review). Removed `--engine`, `--ollama`, `--model`, and `--batch-size` options fail with a useful error. Network attempts reserve character budget before sending and keep that reservation on failures/timeouts. This favors the spending cap over maximizing free usage. Usage persists in `DB_PATH` (CLI default `./data/app.db`). Keep the same persistent ledger when using the same accounts.
+
+## Deployment
+
+[Deployment guide](docs/deployment.md) covers Docker and Coolify, persistent storage, HTTPS, resource limits and operational recovery. Run one replica with 1 vCPU and a 1 GiB container limit (2 GiB host preferred). Node's heap is capped at 512 MiB; native ZIP/XML/SQLite memory also uses the container budget. Peak memory on a real target VPS still needs measurement.
+
+## Validation
+
+```sh
 npm run build
-node dist/cli.js input.docx output.docx --from en --to es
+npm run check:tools
+npm test
+npm run test:browser
 ```
 
-Or using the dev mode (no build required):
+Unit and HTTP integration tests use fixtures, identity translation or mocked providers; they do not spend API credits. Browser tests use Playwright, installed Google Chrome by default (`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can override it). See PLAN.md for current execution evidence and remaining external checks. No deployment or paid subscription is implied.
 
-```bash
-npm run dev -- input.docx output.docx --from en --to es
-```
-
-### Using Local Ollama
-
-Translate using a local Ollama model:
-
-```bash
-npm run dev -- input.docx output.docx --from ro --to hu --ollama --model qwen2.5:7b
-```
-
-Or simply:
-
-```bash
-npm run dev -- input.docx output.docx --ollama
-```
-
-The system will auto-detect available Ollama models and prioritize `qwen2.5:7b`, then `gemma4:latest`, then the first available model.
-
-### CLI Options
-
-```
-Usage:
-  docx-translate <input.docx> <output.docx> [options]
-
-Options:
-  --from <lang>      Source language code (default: en)
-  --to <lang>        Target language code (default: es)
-  --engine <engine>  Translation engine: 'google' (default) or 'ollama'
-  --model <model>    Ollama model name (e.g., qwen2.5:7b, gemma4:latest)
-  --batch-size <n>   Batch size for translation (default: 15)
-  --ollama           Shortcut for --engine ollama
-  --help, -h         Show this help message
-
-Examples:
-  docx-translate input.docx output.docx --from en --to es
-  docx-translate input.docx output.docx --from ro --to hu
-  docx-translate input.docx output.docx --engine ollama --model qwen2.5:7b
-  docx-translate input.docx output.docx --ollama
-```
-
----
-
-## Architecture
-
-The system uses an **unzip → XML DOM mutate → zip** architecture:
-
-```
-                    ┌────────────────────────┐
-                    │      input.docx         │
-                    └───────────┬────────────┘
-                                │ (adm-zip)
-                                ▼
-                   ┌──────────────────────────┐
-                   │      docx-handler.ts     │ (Reads XML elements)
-                   └────────────┬─────────────┘
-                                │ document.xml, headers, footers
-                                ▼
-                   ┌──────────────────────────┐
-                   │       xml-parser.ts      │ (Normalizes runs & tags text)
-                   └────────────┬─────────────┘
-                                │ Inline tags: [f1]text[/f1], [br/]
-                                ▼
-         ┌──────────────────────┴──────────────────────┐
-         │                                              │
-         ▼                                              ▼
-┌──────────────────────┐                   ┌──────────────────────┐
-│  google-translator.ts│                   │  ollama-translator.ts │
-│  (Free, Fast)        │                   │  (Local, Private)    │
-└──────────┬───────────┘                   └──────────┬───────────┘
-           │                                          │
-           └──────────────────┬───────────────────────┘
-                              │ Translated text with intact tags
-                              ▼
-                   ┌──────────────────────────┐
-                   │     reconstructor.ts     │ (Parses tags back to DOCX DOM)
-                   └────────────┬─────────────┘
-                                │ DOM Reconstruction
-                                ▼
-                    ┌────────────────────────┐
-                    │     output.docx        │ (Saves zipped file)
-                    └────────────────────────┘
-```
-
----
-
-## Technical Details
-
-### Tag System
-
-The system uses lightweight bracket tags to preserve formatting:
-
-- **Formatting tags**: `[f1]...[/f1]`, `[f2]...[/f2]`, etc. - Wrap text with specific formatting
-- **Line breaks**: `[br/]` - Represents line breaks within paragraphs
-
-These tags are:
-1. **Preserved by translation engines**: Both Google Translate and Ollama are instructed to keep these tags unchanged
-2. **Repositionable**: Since different languages have different word orders, the tags can move to wrap the correct translated words
-3. **Cleaned automatically**: Google Translate sometimes adds spaces inside brackets; the system cleans these automatically
-
-### Run Merging
-
-Word documents often have "split runs" where a single word is split across multiple text nodes (e.g., `[Spu]`, `[berit]` instead of `[Spuberit]`). The parser automatically merges consecutive runs with identical formatting before translation to ensure accurate results.
-
-### Error Handling
-
-- **Tag Validation**: After translation, the system validates that all formatting tags are present and balanced
-- **Automatic Retries**: If validation fails, the system retries with stricter instructions
-- **Fallback**: If retries fail, a stripped-text translation is used as a final fallback
-
----
-
-## Development
-
-### Project Structure
-
-```
-src/
-├── types.ts              # TypeScript type definitions
-├── docx-handler.ts       # DOCX zip management and XML parsing
-├── xml-parser.ts         # XML parsing, run merging, and tag serialization
-├── google-translator.ts  # Google Translate API client
-├── ollama-translator.ts  # Ollama LLM client with batch processing
-├── reconstructor.ts      # Tag parsing and DOCX DOM reconstruction
-└── cli.ts                # Main CLI interface
-```
-
-### Building
-
-```bash
-npm run build
-```
-
-This compiles TypeScript to JavaScript in the `dist/` directory.
-
-### Running in Development Mode
-
-```bash
-npm run dev -- [args]
-```
-
-This uses `tsx` to run TypeScript directly without building.
-
----
-
-## License
-
-MIT
-
----
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
+MIT licensed.

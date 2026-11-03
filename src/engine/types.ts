@@ -15,24 +15,15 @@ export interface TranslationBlock {
   styleMap: Map<string, any>; // styleId -> w:rPr (run properties)
 }
 
-export interface CLIOptions {
-  input: string;
-  output: string;
-  from?: string;
-  to?: string;
-  engine?: 'google' | 'ollama';
-  model?: string;
-  batchSize?: number;
-}
-
 /**
  * Persistence for free-tier character budgets, injected by the caller.
  *
- * The engine deliberately does not know how this is stored: the CLI gets an in-memory
- * implementation, the server backs it with SQLite on the persistent volume. Usage is bucketed by
+ * The engine deliberately does not know how this is stored: the CLI and server supply
+ * SQLite-backed budgets; library callers may supply another store. Usage is bucketed by
  * calendar-month key (see `currentMonth`), which is what makes the monthly reset automatic.
  */
 export interface QuotaStore {
+  reserveUsage?(provider: string, month: string, characters: number, limit: number): Promise<boolean>;
   getUsage(provider: string, month: string): Promise<number>;
   addUsage(provider: string, month: string, characters: number): Promise<void>;
 }
@@ -58,6 +49,7 @@ export interface TranslateOptions {
    * source text; without this callback the substitution is invisible.
    */
   onTagMismatch?: (blockId: string, partName: string) => void;
+  onStage?: (stage: string, percent: number) => void;
   onProgress?: (done: number, total: number, part: string) => void;
   signal?: AbortSignal;
 }

@@ -91,3 +91,15 @@ test('quota: reset clears a single provider-month', async () => {
     assert.strictEqual(await store.getUsage('google-cloud', '2026-10'), 100);
   });
 });
+
+test('quota: concurrent reservations cannot exceed the persistent budget', async () => {
+  const testDb = path.join(os.tmpdir(), `otter-reserve-${randomUUID()}.db`);
+  process.env.DB_PATH = testDb;
+  await initDb();
+  try {
+    const store = new SqliteQuotaStore();
+    const admitted = await Promise.all(Array.from({length: 8}, () => store.reserveUsage('test', '2026-11', 3, 10)));
+    assert.equal(admitted.filter(Boolean).length, 3);
+    assert.equal(await store.getUsage('test', '2026-11'), 9);
+  } finally { await closeDb(); await fs.unlink(testDb).catch(() => {}); }
+});

@@ -10,9 +10,8 @@ import { RateLimiter } from '../rate-limit.js';
 import { InMemoryQuotaStore, QuotaLedger } from '../quota.js';
 import type { QuotaStore } from '../types.js';
 
-const MS_REGION = process.env.MS_TRANSLATOR_REGION || 'eastus';
 const MS_KEY = process.env.MS_TRANSLATOR_KEY;
-const MS_ENDPOINT = `https://${MS_REGION}.api.cognitive.microsofttranslator.com`;
+const MS_ENDPOINT = 'https://api.cognitive.microsofttranslator.com';
 
 export const MS_MONTHLY_CHAR_LIMIT = 2_000_000;
 
@@ -69,6 +68,7 @@ export class MicrosoftTranslatorBackend implements TranslationBackend {
 
     for (const text of texts) {
       if (signal?.aborted) throw new Error('Translation aborted');
+      if (!text.trim()) { results.push(text); continue; }
 
       const chunks = this.splitText(text, 50000);
       const translatedChunks: string[] = [];
@@ -76,8 +76,7 @@ export class MicrosoftTranslatorBackend implements TranslationBackend {
       for (const chunk of chunks) {
         const translated = await this.translateSingle(chunk, from, to, signal);
         translatedChunks.push(translated);
-        // Charged per accepted chunk: a request that throws below must not count against the tier.
-        await this.ledger.charge(chunk.length);
+
       }
 
       // Preserve leading/trailing whitespace
@@ -109,21 +108,21 @@ export class MicrosoftTranslatorBackend implements TranslationBackend {
     url.searchParams.set('from', from);
     url.searchParams.set('to', to);
 
+    if (signal?.aborted) throw new Error('Translation aborted');
+    await this.ledger.reserve(text.length);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
-
-    if (signal?.aborted) throw new Error('Translation aborted');
 
     try {
       const response = await fetch(url.toString(), {
         method: 'POST',
         headers: {
           'Ocp-Apim-Subscription-Key': this.apiKey,
-          'Ocp-Apim-Subscription-Region': MS_REGION,
+          'Ocp-Apim-Subscription-Region': process.env.MS_TRANSLATOR_REGION || 'eastus',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify([{ text }]),
-        signal: signal || controller.signal,
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
       });
 
       if (response.status === 429 || response.status === 403) {
@@ -140,7 +139,9 @@ export class MicrosoftTranslatorBackend implements TranslationBackend {
       }
 
       const data = await response.json() as Array<{ translations: Array<{ text: string }> }>;
-      return data[0]?.translations[0]?.text || text;
+      const translated = data[0]?.translations?.[0]?.text;
+      if (typeof translated !== 'string' || !translated) throw new Error('Microsoft Translator returned no translated text');
+      return translated;
     } catch (err) {
       if (err instanceof Error) {
         if (err.name === 'AbortError') {

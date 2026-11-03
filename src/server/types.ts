@@ -25,6 +25,10 @@ export interface Job {
   id: string;
   user_id: string;
   status: 'queued' | 'running' | 'done' | 'failed' | 'blocked' | 'quota_exhausted';
+  stage: string;
+  progress: number;
+  retained_blocks: number;
+  original_name: string;
   input_filename: string;
   output_filename: string | null;
   from_lang: string;

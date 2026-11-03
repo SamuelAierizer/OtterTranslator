@@ -1,3 +1,4 @@
+import type { Document } from '@xmldom/xmldom';
 import { unescapeXml } from './xml-parser.js';
 
 const W_NAMESPACE = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';

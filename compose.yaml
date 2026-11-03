@@ -1,0 +1,23 @@
+services:
+  ottertranslator:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file: .env
+    environment:
+      DB_PATH: /data/app.db
+      OUTPUT_DIR: /data/outputs
+      NODE_OPTIONS: --max-old-space-size=512
+    volumes:
+      - otter-data:/data
+    mem_limit: 1g
+    cpus: 1
+    stop_grace_period: 45s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  otter-data:

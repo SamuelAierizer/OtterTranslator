@@ -26,15 +26,15 @@ const mockResponse = (status: number, body: unknown) => {
 test('Microsoft Translator: successful translation', async () => {
   const originalFetch = globalThis.fetch;
   try {
-    globalThis.fetch = (() => {
-      return mockResponse(200, {
-        data: [{ translations: [{ text: 'Szia!' }] }],
-      });
+    globalThis.fetch = ((url: string, init: RequestInit) => {
+      assert.equal(new URL(url).hostname, 'api.cognitive.microsofttranslator.com');
+      assert.equal((init.headers as Record<string,string>)['Ocp-Apim-Subscription-Region'], process.env.MS_TRANSLATOR_REGION || 'eastus');
+      return mockResponse(200, [{ translations: [{ text: 'Szia!' }] }]);
     }) as any;
 
     const backend = new MicrosoftTranslatorBackend('test-key');
     const result = await backend.translateBatch(['Hello'], 'en', 'hu');
-    assert.deepStrictEqual(result, ['Hello']);
+    assert.deepStrictEqual(result, ['Szia!']);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -88,9 +88,7 @@ test('Microsoft Translator: quota tracking', async () => {
   const originalFetch = globalThis.fetch;
   try {
     globalThis.fetch = (() => {
-      return mockResponse(200, {
-        data: [{ translations: [{ text: 'Szia!' }] }],
-      });
+      return mockResponse(200, [{ translations: [{ text: 'Szia!' }] }]);
     }) as any;
 
     const backend = new MicrosoftTranslatorBackend('test-key');
@@ -114,9 +112,7 @@ test('Microsoft Translator: preserves whitespace', async () => {
   const originalFetch = globalThis.fetch;
   try {
     globalThis.fetch = (() => {
-      return mockResponse(200, {
-        data: [{ translations: [{ text: 'Szia' }] }],
-      });
+      return mockResponse(200, [{ translations: [{ text: 'Szia' }] }]);
     }) as any;
 
     const backend = new MicrosoftTranslatorBackend('test-key');

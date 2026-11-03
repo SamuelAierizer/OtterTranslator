@@ -1,13 +1,4 @@
-/**
- * Chat providers for the stage-2 review pass.
- *
- * Cerebras and Groq both expose an OpenAI-compatible `/chat/completions` endpoint with strict
- * JSON-schema structured output, so a single client covers both — only the base URL, key and
- * model name differ. Both are confirmed no-train on free inference (see docs/spike-llm.md);
- * that constraint is hard, because these are confidential business documents. Do not add a
- * provider without checking its training policy first.
- */
-
+/** Optional review transports; see docs/providers.md for current billing/privacy checks. */
 import { BackendTimeoutError } from '../errors.js';
 import { RateLimiter } from '../rate-limit.js';
 
@@ -115,14 +106,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
   }
 }
 
-/**
- * Cerebras first, Groq second. Both run `gpt-oss-120b`, the model with strict structured-output
- * support on both platforms. Cerebras is primary on throughput, not request count: 5 RPM but
- * 30K tokens/minute, against Groq's 30 RPM but only 8K tokens/minute (checked 2026-09-22).
- *
- * A provider with no key configured is skipped rather than failing — the review pass is optional
- * and the document must still complete without it.
- */
+/** Build configured optional reviewers. Account limits and privacy controls need administrator verification. */
 export function createVerifyProviders(fetchImpl?: FetchLike): ChatProvider[] {
   const providers: ChatProvider[] = [];
 

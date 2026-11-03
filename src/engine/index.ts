@@ -10,7 +10,7 @@ import { TranslationBlockedError } from './errors.js';
 import type { TranslateOptions } from './types.js';
 
 const serializer = new XMLSerializer();
-const DEFAULT_BACKEND = process.env.TRANSLATION_BACKEND || 'google';
+
 
 /**
  * Full translate-a-DOCX pipeline: guard -> unzip -> extract -> translate -> reconstruct -> rezip.
@@ -22,6 +22,8 @@ const DEFAULT_BACKEND = process.env.TRANSLATION_BACKEND || 'google';
  * limits) instead of being forced through a fixed chunk size here.
  */
 export async function translateDocx(buffer: Buffer, opts: TranslateOptions): Promise<Buffer> {
+  opts.onStage?.('validating', 2);
+  if (opts.signal?.aborted) throw new Error('Translation aborted');
   assertIsDocx(buffer);
 
   const docHandler = new DocxHandler(buffer);
@@ -41,13 +43,21 @@ export async function translateDocx(buffer: Buffer, opts: TranslateOptions): Pro
 
   const total = allBlocks.length;
   const backend =
-    opts.backendImpl ?? createBackend(opts.backend ?? DEFAULT_BACKEND, { quota: opts.quota });
+    opts.backendImpl ?? createBackend(opts.backend ?? process.env.TRANSLATION_BACKEND ?? 'composite', { quota: opts.quota });
   const texts = allBlocks.map((block) => block.text);
-  let translatedTexts = await backend.translateBatch(texts, opts.from, opts.to, opts.signal);
+  opts.onStage?.('translating', 5);
+  const translatedTextsResult: string[] = [];
+  // Bound batches also provide honest progress while provider calls are in flight.
+  for (let i = 0; i < texts.length; i += 8) {
+    translatedTextsResult.push(...await backend.translateBatch(texts.slice(i, i + 8), opts.from, opts.to, opts.signal));
+    opts.onStage?.('translating', 5 + Math.round(65 * Math.min(i + 8, texts.length) / texts.length));
+  }
+  let translatedTexts = translatedTextsResult;
 
   // Stage 2: optional LLM review pass. Fails open by construction — `verifyTranslations` returns
   // the stage-1 text for anything it cannot safely improve, so the document completes regardless.
   if (opts.verify !== false) {
+    opts.onStage?.('reviewing', 75);
     const reviewed = await verifyTranslations(texts, translatedTexts, {
       from: opts.from,
       to: opts.to,
@@ -57,6 +67,9 @@ export async function translateDocx(buffer: Buffer, opts: TranslateOptions): Pro
     translatedTexts = reviewed.texts;
   }
 
+  opts.onStage?.('reconstructing', 90);
+  if (opts.signal?.aborted) throw new Error('Translation aborted');
+  if (translatedTexts.length !== total) throw new TranslationBlockedError('Provider returned an incomplete translation');
   let tagMismatches = 0;
 
   for (let i = 0; i < allBlocks.length; i++) {

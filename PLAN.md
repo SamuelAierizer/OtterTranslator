@@ -1,116 +1,81 @@
-# OtterTranslator — Implementation Status and Remaining Plan
+# OtterTranslator — v1 delivery status
 
-**Updated:** 2026-11-02
-**Status:** Core translation pipeline and backend service implemented; browser experience and deployment unfinished.
-**Evidence:** Current source, Git history through `76dcf01`, local worktree inventory, and live GitHub repository inspection. This replaces the obsolete “planning complete, no implementation started” status.
+**Updated:** 2026-11-03. **Status:** local product implemented and tested; deployment artifacts prepared. External provider accounts, hosted deployment and real translated-document quality remain unverified.
 
-## TL;DR
+## Scope retained
 
-We have a tested DOCX translation engine, quota-routed Microsoft/Google Cloud translation, an optional LLM review pass, and a Fastify/SQLite service with authentication primitives and upload/job/download APIs. The TypeScript build and all 81 tests passed during the 2026-11-02 status check.
+DOCX only; small email-allowlisted group; one active translation worker; Fastify/SQLite; 2 MiB uploads; 24-hour retention; 1 vCPU / 1–2 GB host; target API spend €0. Formatting-tag validation retains unsafe paragraphs in their source language. Optional LLM review fails back to machine translation and is explicitly disabled by default on the server.
 
-We still need a browser UI, actual magic-link email delivery, reliable job lifecycle and file cleanup, HTTP integration coverage, provider setup, and Docker/Coolify deployment. Existing tests do not establish production readiness or live translation quality. No deployment or working provider credentials were verified in this review.
+## Source and Git baseline
 
-## 1. Scope and constraints
+Inspected PLAN.md, source, local history, status, branches and worktrees before editing. The initial checkout was clean, on main at `fd36b67` (one documentation commit ahead of origin/main at `76dcf01`), with one registered worktree. Old fidelity/scaffold/backend/server branches remain; no merges, branch switches, resets or commits were made. The previous PLAN's core implementation claims were supported by source, but it described historical remote state; this delivery did not re-fetch or re-verify GitHub state.
 
-The intended product remains a self-hosted DOCX translator for a small known group (roughly 5–50 people), deployed on a small VPS through Coolify.
+Initial `npm run build` passed; initial `npm test` passed **81/81** tests. Those were offline/mocked tests, not production validation. No pre-existing uncommitted work was present to preserve.
 
-- DOCX only; other file formats are outside v1.
-- Preserve formatting, document structure, hyperlinks, and inline object positions.
-- One translation job at a time; SQLite and an in-process worker, without Redis or Postgres.
-- Intended host budget: 1–2 GB RAM and 1 vCPU; no local translation model on that host.
-- Intended upload cap: 2 MiB, with decompression and XML size guards.
-- Intended retention: 24 hours for uploaded and generated documents.
-- Allowlisted email authentication through single-use magic links.
-- Target API spend: €0, with provider budgets enforced. Account configuration and current provider terms still need verification before deployment.
-- Optional LLM corrections must preserve tags; unsafe or failed review responses retain the machine translation.
-- Keep the CLI as a local entry point into the same engine.
+## Completed
 
-## 2. What is implemented
+- [x] Single multipart iterator accepts file and language fields in either order; explicit one-file/two-field/2 MiB limits; invalid/duplicate fields and same-language submissions rejected.
+- [x] Full DOCX archive and XML validation before queueing; Word content type required; macros/DTD rejected; ZIP decompression/entry limits, per-part and combined XML parsing budgets enforced.
+- [x] Persisted stages and translation-batch progress, recent jobs endpoint, source-retained paragraph count, authenticated downloads and ownership checks.
+- [x] Interrupted running jobs become failed on startup without automatic provider retries. Queued jobs remain queued. Graceful SIGINT/SIGTERM shutdown aborts active translation and awaits its state update before closing SQLite; 30-minute job deadline.
+- [x] 24-hour access cutoff from upload time. Startup/minute maintenance removes inputs, outputs, failed/queued job records and old orphan artifacts; deletion failures preserve retryable state and are logged.
+- [x] Atomic admission: 2 active jobs/user, 10 accepted uploads/user per rolling day, global 50 active-job cap.
+- [x] SMTP magic-link delivery through Nodemailer with bounded connection/socket timeouts and failure invalidation; normalized allowlists; atomic single-use redemption; session expiry in seconds, root cookie path, HttpOnly/SameSite and HTTPS Secure; logout and allowlist revocation.
+- [x] Responsive server-rendered login/upload/history UI and vanilla JavaScript polling; clear upload/provider errors, progress and download links. Email on completion is intentionally omitted from v1; recent-job polling provides completion access.
+- [x] CLI options reflect supported composite/identity backends and explicit review; obsolete options fail clearly. CLI shares persistent SQLite usage accounting. README, environment example, provider/account notes and exact local/deployment steps rewritten.
+- [x] Dockerfile and Compose: multi-stage build, non-root runtime, persistent `/data`, healthcheck, init, 1 CPU / 1 GiB container limit, 512 MiB Node heap, 45-second shutdown grace; Coolify/HTTPS/volume/recovery guidance.
+- [x] Dependency advisory review and upgrades: patched Fastify 5, matching plugins, SQLite, XML/ZIP and mail packages; npm install reported **0 vulnerabilities**. Added reproducible package-lock.json (it was previously ignored).
+- [x] Corrected pre-existing Microsoft endpoint: documented global API host plus resource-region header. Fixed a misleading old test whose response shape caused an untranslated source fallback while being labeled a successful translation.
+- [x] Provider requests reserve budget before network I/O, atomically with SQLite. Uncertain failures retain reservations to avoid undercounting after timeouts/crashes. Local counters still cannot guarantee account-level spend; dedicated F0 accounts and account controls are required.
 
-| Area | Current implementation | Limits / unfinished work |
-|---|---|---|
-| Engine library | `translateDocx(buffer, options)` with typed errors, abort signal support, progress and tag-mismatch callbacks | Progress callbacks currently run during reconstruction, after translation/review |
-| DOCX fidelity | Tagged formatting runs, container wrappers for hyperlinks and other nested content, positional inline-object placeholders | Real translated documents still need visual QA across representative layouts |
-| Document parts | Main document, headers, footers, footnotes, endnotes; text boxes through recursive paragraph discovery | Comments, SmartArt, and metadata translation are not implemented |
-| Validation | Required DOCX ZIP parts, archive decompression guards, XML part size checks before parsing; XXE regression coverage | HTTP upload validation currently checks size and ZIP signature only; full structural checks happen in the worker |
-| Machine translation | Microsoft Translator primary, Google Cloud secondary on quota exhaustion or provider blocking; request batching and limiting | Credentials/account configuration and live provider behavior remain unverified |
-| Quotas | SQLite usage ledger by provider and calendar month, injected into the engine; charge after successful calls | This protects shared provider budgets; per-user job admission limits are not implemented |
-| LLM review | Optional Cerebras primary / Groq fallback, structured responses, batching, rate limiting, tag checks and safe fallback | Enabled by configured provider keys; no configured provider means review is skipped; live quality/privacy/account setup still requires validation |
-| HTTP service | Fastify, cookies, multipart upload, job status and download routes, `/healthz` with queue depth and provider quotas | No browser page, no job-list/history endpoint, no persisted progress |
-| Authentication | Email allowlist, expiring magic tokens, sessions, expiry cleanup | Request endpoint logs the magic link; SMTP delivery is still a TODO |
-| Jobs | SQLite-backed queued/running/done/error states; serialized worker | Interrupted running jobs are not recovered on startup; stop does not await active work |
-| Retention | Hourly purge of outputs and rows for successful jobs completed over 24 hours ago | Uploaded inputs and failed-job artifacts are not purged |
-| CLI | Calls the shared engine and writes a translated DOCX | Help and engine labels are stale; parsed engine/model/batch options are not passed into the shared engine |
+## Validation evidence
 
-### Backend choice supersedes the original plan
-
-The original plan depended on Google's undocumented free web endpoint. September research recorded blocked requests, and the implemented backend factory now selects the Microsoft/Google Cloud composite for every backend name except `identity`. The identity backend supports offline tests. The old Google web endpoint and Ollama code are not the active CLI/server routing path.
-
-The source currently encodes provider budgets and review defaults. Treat the research in [spike-backend.md](docs/spike-backend.md) and [spike-llm.md](docs/spike-llm.md) as historical findings, not current guarantees of pricing, availability, model support, or privacy terms.
-
-## 3. Git and GitHub status
-
-Checked on 2026-11-02:
-
-- Local and live remote `main` point to `76dcf013b37d910317265a29595dd7955ea85f6f`.
-- Only one registered worktree exists: the main project checkout. It was clean before this documentation update.
-- Old local branches `worktree-feat+backend` and `worktree-feat-server` retain their original commits. Their relevant files were ported onto `main`, with corrections, rather than merged wholesale; the landing commit messages explicitly document this.
-- `fix/fidelity` and the scaffold/research branches point to earlier commits already reachable from `main`.
-- GitHub has only the `main` branch and no issues or pull requests, open or closed. There is no GitHub backlog capturing the remaining work.
-
-### Landed implementation milestones
-
-All entries below landed on 2026-09-22.
-
-| Commit | Result |
+| Check | Result / limits |
 |---|---|
-| `7fc5e59` | Engine scaffold, shared tag guard and backend/batch fixes |
-| `4e33209` | DOCX and Ollama hardening |
-| `12385c5` | Container/hyperlink and inline-object fidelity fixes |
-| `dd302a1` | Microsoft + Google Cloud quota-routed backends; ported backend branch work |
-| `ac09d1a` | Fastify/SQLite service and auth; ported server branch work, corrected DB-path and expiry defects |
-| `b862107` | Optional stage-2 LLM review pass |
-| `76dcf01` | Persistent quota wiring, safe tag-mismatch handling, retention timestamp fixes, health reporting and Google request corrections |
+| TypeScript build | Passed after implementation and dependency migration |
+| Unit and HTTP integration suite | **90/90 passed**; fixtures, mocked providers or identity backend |
+| HTTP integration | Multipart field ordering/limits/invalid DOCX, normalized login, concurrent token replay, ownership, completion/download, startup recovery, full retention/orphans, deletion failure/retry, HTTPS cookie attributes, concurrent/daily admissions, graceful active-worker stop, concurrent budget reservations |
+| Playwright + installed Chrome | **1 complete product test passed**: production SMTP transport against local SMTP receiver, emailed link sign-in, upload, Romanian→Hungarian field selection, identity processing, downloaded DOCX XML, invalid/oversized file errors, logout, used-link replay, no page JavaScript errors |
+| Browser screenshots | `test-results/product-desktop.png` and `product-mobile.png` generated and visually inspected; mobile 390px viewport has no horizontal overflow |
+| CLI | Help and rejection of `--ollama` checked; near-limit fixture successfully written via identity backend |
+| Local size/memory smoke | 1,999,297-byte DOCX with incompressible media; identity engine run 18 ms, 79,696 KiB max RSS on this Mac; excludes real provider latency and does not establish VPS sizing |
+| Compose | `docker compose --env-file .env.example config --no-env-resolution --quiet` passed |
+| Docker image/runtime | **Not tested:** Docker CLI exists but daemon is unavailable. No external deployment attempted |
+| Real services | **No translation/review calls or remote SMTP delivery tested:** no configured credentials available |
+| Document visual fidelity | Existing six DOCX fixture structural round trips pass. Real translated outputs in Word/LibreOffice remain visually unverified |
 
-## 4. Remaining work, in delivery order
+Browser testing uses Playwright at the user's explicit direction. The computer-use connector was unavailable and native permissions were absent; these were bypassed by using the requested headless test tooling, not by changing system permissions.
 
-### A. Finish the service contract and lifecycle
+The completed app and local SMTP sink were started; live local health and SMTP sign-in submission returned success. A gitignored `.env` now supplies an **offline local demo**: demo@example.com, identity backend, local SMTP sink on port 2525. Run `npm run mailbox` and `npm run server` in separate terminals. Open http://localhost:3000, request the demo email's link and use the URL printed by the mailbox. This demo preserves source language; it is not evidence of real translation.
 
-- [ ] Make upload parsing consume the file and language fields reliably in one multipart flow; cover field ordering and enforce an explicit 2 MiB multipart limit.
-- [ ] Validate DOCX structure before accepting a job, using the engine's existing guards where appropriate.
-- [ ] Persist useful progress and stage information so polling can show translation/review status. Surface retained-source paragraphs to the user rather than only logging them.
-- [ ] Recover interrupted `running` jobs on startup with a defined retry policy; await in-flight work during graceful shutdown.
-- [ ] Enforce 24-hour retention for inputs, outputs, failed jobs and orphaned files; handle file deletion failures explicitly.
-- [ ] Add per-user job admission limits alongside the existing shared provider quotas.
-- [ ] Complete auth integration: SMTP delivery, normalized allowlist entries, atomic single-use token consumption, and session-cookie behavior including path and expiry units.
-- [ ] Add meaningful HTTP/worker integration tests covering upload language fields and limits, auth and ownership, job completion, restart recovery, and full retention.
+## Provider terms and external work remaining
 
-### B. Build the browser experience
+Current official pricing, quotas, endpoints and privacy documentation were browsed; links and findings are in [docs/providers.md](docs/providers.md). Microsoft F0 remains the intended primary. Google's allowance is a shared monthly credit and its default daily quota is unlimited. Cerebras trial/pay-as-you-go availability must not be presented as a guaranteed permanent free tier. Groq retention/ZDR and account limits require administrator checks. No account-specific entitlement, billing or privacy control was inspected.
 
-- [ ] Serve a login page and wire the magic-link email flow.
-- [ ] Add a DOCX upload form with source and target languages.
-- [ ] Poll job status and present progress, provider/quota failures, and the final download link.
-- [ ] Provide access to recent jobs during the retention window, with an authenticated job-list endpoint if needed.
-- [ ] Decide whether email-on-completion belongs in v1; magic-link email delivery is required regardless.
+- [ ] Supply existing SMTP credentials and verify actual delivery, sender authorization and mailbox behavior.
+- [ ] Verify dedicated Microsoft F0 account/tier, resource region and remaining quota; optionally verify Google shared credit, API restrictions and hard quota controls before supplying a fallback key.
+- [ ] Keep LLM review off until real account billing/model/privacy controls are confirmed; enable Groq ZDR for confidential review where applicable.
+- [ ] Run real translations for priority language pairs and visually inspect representative tables, hyperlinks, inline images, headers/footers, notes and text boxes in Word or an equivalent renderer.
+- [ ] Build/run Docker with an available daemon; check non-root volume ownership, persistence, healthcheck, SIGTERM and memory cap in the actual container.
+- [ ] With separate authorization, deploy through Coolify, configure HTTPS/origin, validate end-to-end mail/upload/download and retention, measure peak memory/time on the target VPS, and reconcile provider dashboard counters.
 
-### C. Make configuration and local use accurate
+Exact setup, deployment and recovery steps: [README.md](README.md), [.env.example](.env.example), [docs/deployment.md](docs/deployment.md). These remaining checks require credentials, infrastructure or authorization unavailable locally; the product implementation does not depend on adding paid services.
 
-- [ ] Update README and CLI help to describe the implemented provider routing and required credentials.
-- [ ] Remove or correctly wire CLI options that currently have no effect; correct the hardcoded Google engine label.
-- [ ] Add a documented server start command and example environment configuration for database/output paths, origin, allowlist, SMTP, translation keys and optional review keys.
-- [ ] Configure provider accounts and verify current free-tier limits, billing controls, review model support, and no-training requirements before sending business documents.
+## UI refinement — 2026-11-03
 
-### D. Package, validate and deploy
+Removed the promotional eyebrow and slogan, decorative punctuation, shadows, oversized rounding and dashed upload panel. Replaced conversational copy with direct labels and short status messages; retained upload limits, expiry, demo-mode and provider-processing notices. The interface now uses neutral surfaces and conventional blue actions. Build, all 86 tests and the Playwright product flow passed; mobile screenshot inspected.
 
-- [ ] Add a multi-stage Dockerfile, non-root runtime, healthcheck, and explicit Node memory limit suitable for the VPS.
-- [ ] Document Coolify deployment, persistent `/data` storage, HTTPS/origin configuration, and operational recovery.
-- [ ] Run authenticated end-to-end tests with real provider credentials, including the priority language pairs and representative DOCX files.
-- [ ] Visually compare translated documents in Word or an equivalent renderer: tables, hyperlinks, inline images, headers/footers, notes, and text boxes.
-- [ ] Measure peak memory and completion time on the target VPS with near-limit documents; verify quota exhaustion, provider failure, restart behavior, and cleanup there.
-- [ ] Deploy and confirm health, login email delivery, upload, translation, download, and retention in the hosted environment.
+## Review fixes — 2026-11-03
 
-## 5. Verification baseline
+All four functional findings and four standards findings from the two-axis review are addressed:
 
-On 2026-11-02, `npm run build` passed and `npm test` passed all 81 tests. Coverage includes fixture round trips, parser/reconstructor fidelity, tag mismatch fallback, security guards, backend routing/quotas/rate limits, database/auth primitives, and LLM review/provider behavior.
+- Progress persistence handles rejection immediately, remembers the storage error and aborts active translation. The job drains its writes and records failure without an unhandled rejection or publishing an output after an abort.
+- Retention cleanup handles filesystem errors per artifact/job, logs the error and keeps affected rows for retry. An undeletable expired input no longer blocks startup or deletion of unrelated jobs. Database errors still propagate.
+- Queue selection excludes expired documents; the conditional claim rechecks the 24-hour cutoff atomically before reading input or invoking translation. Minute maintenance removes expired queued artifacts.
+- Sign-in token admission uses one conditional INSERT with RETURNING, limiting each normalized email to three tokens in a rolling fifteen minutes even under concurrent requests.
+- Restored explicit function return/parameter annotations on the reviewed server/worker/UI APIs and added public API lifecycle/retention documentation. Expanded the compressed server code to follow the existing multiline style.
+- Converted the development mailbox to TypeScript and extracted one loopback-only SMTP sink shared with the Playwright harness. Use `npm run mailbox`; `npm run check:tools` typechecks scripts and browser-test code.
 
-This baseline uses offline fixtures and mocked providers. It does not prove that the complete HTTP flow, SMTP delivery, real provider accounts, deployed container, visual translation quality, or VPS memory budget work. Repeat the existing checks after code changes and add integration coverage for the unfinished flows above.
+Validation: the four new regression scenarios were run against the previous implementation and failed, then passed after the fixes. `npm run build`, `npm run check:tools`, all **90** unit/integration tests, and the Playwright product flow passed. Coverage includes progress-write failure during in-flight translation, startup cleanup failure with unrelated cleanup/retry, expired-versus-fresh queued work, and eight concurrent sign-in requests admitting exactly three emails (plus window reset). Browser SMTP delivery now uses the shared TypeScript sink. External credential/container/VPS checks above remain unverified.
+
+The application remains stopped at the user's request. Playwright's temporary test server was closed; no listener remains on application port 3000 or test port 3011.

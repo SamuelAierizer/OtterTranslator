@@ -1,6 +1,8 @@
+import type { Document } from '@xmldom/xmldom';
 import fs from 'fs';
 import AdmZip from 'adm-zip';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
+import { MalformedDocxError, DocumentTooLargeError } from './errors.js';
 import { assertIsDocx, assertNoZipBomb, assertPartSize } from './guards.js';
 
 /**
@@ -49,7 +51,10 @@ export class DocxHandler {
         name === 'word/endnotes.xml'
       );
 
-    const parser = new DOMParser();
+    let invalid = false;
+    const parser = new DOMParser({ onError: () => { invalid = true; } });
+    const totalXml = targetParts.reduce((sum, part) => sum + (this.zip!.getEntry(part)?.header.size || 0), 0);
+    if (totalXml > 8 * 1024 * 1024) throw new DocumentTooLargeError('Total document XML exceeds 8 MiB parsing budget');
 
     for (const part of targetParts) {
       const content = this.zip.readFile(part);
@@ -57,7 +62,10 @@ export class DocxHandler {
         throw new Error(`Unable to read DOCX part: ${part}`);
       }
       assertPartSize(content.length);
-      const dom = parser.parseFromString(content.toString('utf-8'), 'application/xml');
+      const xml = content.toString('utf-8');
+      if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new MalformedDocxError('DTD and entities are not supported');
+      const dom = parser.parseFromString(xml, 'application/xml');
+      if (invalid || !dom.documentElement || (part === 'word/document.xml' && (dom.documentElement.localName !== 'document' || dom.documentElement.namespaceURI !== 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'))) throw new MalformedDocxError('Malformed Word XML');
       this.doms.set(part, dom);
     }
 

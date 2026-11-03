@@ -1,6 +1,6 @@
 import sqlite3 from 'sqlite3';
 import path from 'path';
-import { promisify } from 'util';
+import { mkdir } from 'fs/promises';
 
 // Resolved per `initDb()` call rather than at module load: the module is imported long before
 // the process environment is final (tests point DB_PATH at a temp file after importing), and a
@@ -28,7 +28,8 @@ export function getDb(): Database {
 }
 
 export async function initDb(): Promise<Database> {
-  if (db) return wrapDb(db);
+  if (db) { await dbReady; return wrapDb(db); }
+  await mkdir(path.dirname(resolveDbPath()), { recursive: true });
 
   dbReady = new Promise((resolve, reject) => {
     db = new sqlite3.Database(resolveDbPath(), (err) => {
@@ -102,6 +103,8 @@ function wrapDb(database: sqlite3.Database): Database {
 
 async function setupSchema(): Promise<void> {
   const schema = `
+    PRAGMA journal_mode=WAL;
+    PRAGMA foreign_keys=ON;
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
@@ -161,10 +164,14 @@ async function setupSchema(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_quota_usage_provider_month ON quota_usage(provider, month);
   `;
 
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     db.exec(schema, (err) => {
       if (err) reject(err);
       else resolve();
     });
   });
+  const columns = await getDb().all<{name: string}>('PRAGMA table_info(jobs)');
+  for (const [name, definition] of Object.entries({ stage: "TEXT DEFAULT 'queued'", progress: 'INTEGER DEFAULT 0', retained_blocks: 'INTEGER DEFAULT 0', original_name: "TEXT DEFAULT 'document.docx'" })) {
+    if (!columns.some(c => c.name === name)) await getDb().run(`ALTER TABLE jobs ADD COLUMN ${name} ${definition}`);
+  }
 }

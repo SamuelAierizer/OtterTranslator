@@ -8,7 +8,7 @@ import { DocumentTooLargeError, MalformedDocxError } from '../src/engine/errors.
 function makeDocx(extra: Record<string, string> = {}): Buffer {
   const zip = new AdmZip();
   zip.addFile('[Content_Types].xml', Buffer.from('<Types/>'));
-  zip.addFile('word/document.xml', Buffer.from('<w:document/>'));
+  zip.addFile('word/document.xml', Buffer.from('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'));
   for (const [name, content] of Object.entries(extra)) zip.addFile(name, Buffer.from(content));
   return zip.toBuffer();
 }
@@ -43,8 +43,8 @@ test('@xmldom/xmldom does not resolve external entities', () => {
 test('DocxHandler discovers footnotes and endnotes', async () => {
   const { DocxHandler } = await import('../src/engine/docx-handler.js');
   const parts = new DocxHandler(makeDocx({
-    'word/footnotes.xml': '<w:footnotes/>',
-    'word/endnotes.xml': '<w:endnotes/>',
+    'word/footnotes.xml': '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+    'word/endnotes.xml': '<w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
     'word/comments.xml': '<w:comments/>',
   })).load();
   assert.deepEqual(parts.sort(), ['word/document.xml', 'word/endnotes.xml', 'word/footnotes.xml']);

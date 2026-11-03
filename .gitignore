@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
@@ -50,3 +49,12 @@ coverage/
 *.docx
 *.doc
 *.pdf
+
+# Local service state
+data/
+*.db
+*.db-wal
+*.db-shm
+
+test-results/
+playwright-report/

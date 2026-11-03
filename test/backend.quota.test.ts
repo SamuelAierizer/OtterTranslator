@@ -101,7 +101,7 @@ test('quota routing: usage persists across backend instances', async () => {
   );
 });
 
-test('quota routing: a failed request is not charged', async () => {
+test('quota routing: an uncertain failed request retains its budget reservation', async () => {
   const quota = new InMemoryQuotaStore();
   const backend = createBackend(undefined, { msKey: 'ms', gcKey: 'gc', quota });
 
@@ -109,6 +109,6 @@ test('quota routing: a failed request is not charged', async () => {
     assert.rejects(() => backend.translateBatch(['Hello there'], 'en', 'hu'))
   );
 
-  assert.strictEqual(await quota.getUsage(MS, currentMonth()), 0);
+  assert.strictEqual(await quota.getUsage(MS, currentMonth()), 'Hello there'.length);
   assert.strictEqual(await quota.getUsage(GC, currentMonth()), 0);
 });

@@ -16,54 +16,63 @@ function nowIso(): string {
 }
 
 function getAllowlist(): Set<string> {
-  return new Set((process.env.EMAIL_ALLOWLIST || '').split(',').filter(Boolean));
+  return new Set((process.env.EMAIL_ALLOWLIST || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean));
 }
 
 export async function isEmailAllowed(email: string): Promise<boolean> {
   const allowlist = getAllowlist();
   if (allowlist.size === 0) return false;
-  return allowlist.has(email.toLowerCase());
+  return allowlist.has(email.trim().toLowerCase());
 }
 
+/** Raised when three sign-in tokens already exist in the rolling fifteen-minute window. */
+export class MagicLinkRateLimitError extends Error {
+  constructor() {
+    super('Too many sign-in requests. Try again in 15 minutes.');
+    this.name = 'MagicLinkRateLimitError';
+  }
+}
+
+/** Create an expiring token only if the email's atomic admission check succeeds. */
 export async function createMagicToken(email: string): Promise<string> {
-  const db = getDb();
-  const id = randomUUID();
-  const token = randomBytes(32).toString('hex');
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + TOKEN_EXPIRY_MINUTES * 60 * 1000);
-
-  await db.run(
-    `INSERT INTO magic_tokens (id, email, token, expires_at) VALUES (?, ?, ?, ?)`,
-    [id, email.toLowerCase(), token, expiresAt.toISOString()]
+  const normalizedEmail = email.trim().toLowerCase();
+  const token = randomBytes(32).toString('hex');
+  const cutoff = new Date(now.getTime() - TOKEN_EXPIRY_MINUTES * 60 * 1000).toISOString();
+  const expiresAt = new Date(now.getTime() + TOKEN_EXPIRY_MINUTES * 60 * 1000).toISOString();
+  const inserted = await getDb().get<{ token: string }>(
+    `INSERT INTO magic_tokens (id,email,token,created_at,expires_at)
+     SELECT ?,?,?,?,? WHERE
+       (SELECT count(*) FROM magic_tokens WHERE email=? AND julianday(created_at)>julianday(?)) < 3
+     RETURNING token`,
+    [randomUUID(), normalizedEmail, token, now.toISOString(), expiresAt, normalizedEmail, cutoff],
   );
-
-  return token;
+  if (!inserted) throw new MagicLinkRateLimitError();
+  return inserted.token;
 }
 
 export async function verifyMagicToken(token: string): Promise<User | null> {
   const db = getDb();
   const magicToken = await db.get<MagicToken>(
-    `SELECT * FROM magic_tokens WHERE token = ? AND used = 0 AND expires_at > ?`,
+    `UPDATE magic_tokens SET used = 1 WHERE token = ? AND used = 0 AND expires_at > ? RETURNING *`,
     [token, nowIso()]
   );
 
-  if (!magicToken) {
+  if (!magicToken || !(await isEmailAllowed(magicToken.email))) {
     return null;
   }
 
-  // Mark token as used
-  await db.run(`UPDATE magic_tokens SET used = 1 WHERE id = ?`, [magicToken.id]);
 
   // Get or create user
   let user = await db.get<User>(`SELECT * FROM users WHERE email = ?`, [magicToken.email]);
 
   if (!user) {
     const userId = randomUUID();
-    await db.run(`INSERT INTO users (id, email) VALUES (?, ?)`, [userId, magicToken.email]);
+    await db.run(`INSERT OR IGNORE INTO users (id, email) VALUES (?, ?)`, [userId, magicToken.email]);
     user = { id: userId, email: magicToken.email, created_at: new Date().toISOString() };
   }
 
-  return user;
+  return (await db.get<User>('SELECT * FROM users WHERE email = ?', [magicToken.email])) || null;
 }
 
 export async function createSession(userId: string): Promise<string> {
@@ -93,7 +102,7 @@ export async function getSessionUser(token: string): Promise<User | null> {
   }
 
   const user = await db.get<User>(`SELECT * FROM users WHERE id = ?`, [session.user_id]);
-  return user || null;
+  return user && await isEmailAllowed(user.email) ? user : null;
 }
 
 export async function deleteExpiredTokens(): Promise<void> {

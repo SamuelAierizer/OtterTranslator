@@ -23,6 +23,7 @@ export function assertIsDocx(buf: Buffer): void {
 export function assertNoZipBomb(zip: AdmZip): void {
   const maxUncompressedBytes = 100 * 1024 * 1024;
   const maxCompressionRatio = 100;
+  if (zip.getEntries().length > 2048) throw new DocumentTooLargeError('Too many DOCX archive entries');
   let totalUncompressed = 0;
 
   for (const entry of zip.getEntries()) {
