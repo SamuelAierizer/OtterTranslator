@@ -10,19 +10,23 @@ Thank you for your interest in contributing! This document provides guidelines f
    cd <repository>
    ```
 
-2. **Install dependencies**
+2. **Install dependencies** (Node 22.12+; pnpm is pinned in `package.json`)
    ```bash
-   npm install
+   corepack enable pnpm
+   corepack install
+   pnpm install --frozen-lockfile
    ```
+
+   Use pnpm for dependency changes and commit the updated `pnpm-lock.yaml`. Other package managers are rejected during installation.
 
 3. **Build the project**
    ```bash
-   npm run build
+   pnpm run build
    ```
 
 4. **Run in development mode**
    ```bash
-   npm run dev -- input.docx output.docx --from en --to es
+   pnpm run dev input.docx output.docx --from en --to es
    ```
 
 ## Code Style
@@ -49,7 +53,7 @@ src/
 ## Testing
 
 Before submitting a pull request:
-1. Ensure the project builds successfully: `npm run build`
+1. Ensure the project builds successfully: `pnpm run build`
 2. Test your changes with sample DOCX files
 3. Verify TypeScript compilation produces no errors
 

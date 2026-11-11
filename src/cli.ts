@@ -8,14 +8,14 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`OtterTranslator — DOCX translation preserving document structure
-Usage: npm start -- input.docx output.docx [--from en] [--to ro] [--backend composite|identity] [--review]
+Usage: pnpm start input.docx output.docx [--from en] [--to ro] [--backend composite|identity] [--review]
 
 Microsoft Translator primary; Google Cloud fallback on quota/provider blocking.
 Configure MS_TRANSLATOR_KEY / MS_TRANSLATOR_REGION, optionally GOOGLE_CLOUD_API_KEY.
 --backend identity is an offline formatting check; it does not translate.
 --review explicitly enables optional configured LLM providers.
 Usage is persisted in DB_PATH (default ./data/app.db), shared with the server.
-Server: npm run server (after npm run build)
+Server: pnpm run server (after pnpm run build)
 Old --engine, --ollama, --model and --batch-size options are no longer supported.`);
     return;
   }

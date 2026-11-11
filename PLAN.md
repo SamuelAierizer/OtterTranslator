@@ -10,7 +10,7 @@ DOCX only; small email-allowlisted group; one active translation worker; Fastify
 
 Inspected PLAN.md, source, local history, status, branches and worktrees before editing. The initial checkout was clean, on main at `fd36b67` (one documentation commit ahead of origin/main at `76dcf01`), with one registered worktree. Old fidelity/scaffold/backend/server branches remain; no merges, branch switches, resets or commits were made. The previous PLAN's core implementation claims were supported by source, but it described historical remote state; this delivery did not re-fetch or re-verify GitHub state.
 
-Initial `npm run build` passed; initial `npm test` passed **81/81** tests. Those were offline/mocked tests, not production validation. No pre-existing uncommitted work was present to preserve.
+The initial build passed; the initial test suite passed **81/81** tests. Those were offline/mocked tests, not production validation. No pre-existing uncommitted work was present to preserve.
 
 ## Completed
 
@@ -24,7 +24,7 @@ Initial `npm run build` passed; initial `npm test` passed **81/81** tests. Those
 - [x] Responsive server-rendered login/upload/history UI and vanilla JavaScript polling; clear upload/provider errors, progress and download links. Email on completion is intentionally omitted from v1; recent-job polling provides completion access.
 - [x] CLI options reflect supported composite/identity backends and explicit review; obsolete options fail clearly. CLI shares persistent SQLite usage accounting. README, environment example, provider/account notes and exact local/deployment steps rewritten.
 - [x] Dockerfile and Compose: multi-stage build, non-root runtime, persistent `/data`, healthcheck, init, 1 CPU / 1 GiB container limit, 512 MiB Node heap, 45-second shutdown grace; Coolify/HTTPS/volume/recovery guidance.
-- [x] Dependency advisory review and upgrades: patched Fastify 5, matching plugins, SQLite, XML/ZIP and mail packages; npm install reported **0 vulnerabilities**. Added reproducible package-lock.json (it was previously ignored).
+- [x] Dependency advisory review and upgrades: patched Fastify 5, matching plugins, SQLite, XML/ZIP and mail packages; the dependency installation reported **0 vulnerabilities**. Added a reproducible dependency lockfile (subsequently migrated to `pnpm-lock.yaml`).
 - [x] Corrected pre-existing Microsoft endpoint: documented global API host plus resource-region header. Fixed a misleading old test whose response shape caused an untranslated source fallback while being labeled a successful translation.
 - [x] Provider requests reserve budget before network I/O, atomically with SQLite. Uncertain failures retain reservations to avoid undercounting after timeouts/crashes. Local counters still cannot guarantee account-level spend; dedicated F0 accounts and account controls are required.
 
@@ -46,7 +46,7 @@ Initial `npm run build` passed; initial `npm test` passed **81/81** tests. Those
 
 Browser testing uses Playwright at the user's explicit direction. The computer-use connector was unavailable and native permissions were absent; these were bypassed by using the requested headless test tooling, not by changing system permissions.
 
-The completed app and local SMTP sink were started; live local health and SMTP sign-in submission returned success. A gitignored `.env` now supplies an **offline local demo**: demo@example.com, identity backend, local SMTP sink on port 2525. Run `npm run mailbox` and `npm run server` in separate terminals. Open http://localhost:3000, request the demo email's link and use the URL printed by the mailbox. This demo preserves source language; it is not evidence of real translation.
+The completed app and local SMTP sink were started; live local health and SMTP sign-in submission returned success. A gitignored `.env` now supplies an **offline local demo**: demo@example.com, identity backend, local SMTP sink on port 2525. Run `pnpm run mailbox` and `pnpm run server` in separate terminals. Open http://localhost:3000, request the demo email's link and use the URL printed by the mailbox. This demo preserves source language; it is not evidence of real translation.
 
 ## Provider terms and external work remaining
 
@@ -74,8 +74,8 @@ All four functional findings and four standards findings from the two-axis revie
 - Queue selection excludes expired documents; the conditional claim rechecks the 24-hour cutoff atomically before reading input or invoking translation. Minute maintenance removes expired queued artifacts.
 - Sign-in token admission uses one conditional INSERT with RETURNING, limiting each normalized email to three tokens in a rolling fifteen minutes even under concurrent requests.
 - Restored explicit function return/parameter annotations on the reviewed server/worker/UI APIs and added public API lifecycle/retention documentation. Expanded the compressed server code to follow the existing multiline style.
-- Converted the development mailbox to TypeScript and extracted one loopback-only SMTP sink shared with the Playwright harness. Use `npm run mailbox`; `npm run check:tools` typechecks scripts and browser-test code.
+- Converted the development mailbox to TypeScript and extracted one loopback-only SMTP sink shared with the Playwright harness. Use `pnpm run mailbox`; `pnpm run check:tools` typechecks scripts and browser-test code.
 
-Validation: the four new regression scenarios were run against the previous implementation and failed, then passed after the fixes. `npm run build`, `npm run check:tools`, all **90** unit/integration tests, and the Playwright product flow passed. Coverage includes progress-write failure during in-flight translation, startup cleanup failure with unrelated cleanup/retry, expired-versus-fresh queued work, and eight concurrent sign-in requests admitting exactly three emails (plus window reset). Browser SMTP delivery now uses the shared TypeScript sink. External credential/container/VPS checks above remain unverified.
+Validation: the four new regression scenarios were run against the previous implementation and failed, then passed after the fixes. `pnpm run build`, `pnpm run check:tools`, all **90** unit/integration tests, and the Playwright product flow passed. Coverage includes progress-write failure during in-flight translation, startup cleanup failure with unrelated cleanup/retry, expired-versus-fresh queued work, and eight concurrent sign-in requests admitting exactly three emails (plus window reset). Browser SMTP delivery now uses the shared TypeScript sink. External credential/container/VPS checks above remain unverified.
 
 The application remains stopped at the user's request. Playwright's temporary test server was closed; no listener remains on application port 3000 or test port 3011.

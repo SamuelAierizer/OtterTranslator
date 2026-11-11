@@ -131,7 +131,7 @@ Only found a free *consumer-facing* product (web/app, 10,000 chars/request, not 
 
 ## 5. Offline/local option: `@xenova/transformers` + quantised OPUS-MT
 
-**Tested live**, Node v24.5.0, on the developer's machine (not the target 1 GB/1 vCPU VPS — see caveat below), using `@xenova/transformers` (npm install into a throwaway scratch project outside the repo, not added as a project dependency).
+**Tested live**, Node v24.5.0, on the developer's machine (not the target 1 GB/1 vCPU VPS — see caveat below), using `@xenova/transformers` (installed into a throwaway scratch project outside the repo, not added as a project dependency).
 
 ### Model availability for RO→HU
 
@@ -168,7 +168,7 @@ HU: Kedves uram vagy asszonyom, köszönöm a március 3-i levelét.
 
 ### `@browsermt/bergamot-translator` — not tested live, ruled out on inspection
 
-Not benchmarked (the `@xenova/transformers` result already disqualifies the offline approach, and time was better spent confirming this rather than re-deriving the same conclusion twice). On inspection: the canonical `mozilla/bergamot-translator` GitHub repository is explicitly marked **INACTIVE**. The actively-published npm package (`@browsermt/bergamot-translator`) is documented and designed for **browser/WASM client-side use** (worker-based, `delete()` cleanup pattern typical of WASM bindings) — there's no documented server-side Node deployment pattern or RAM benchmarks from the maintainers. Building a stable, resumable-after-restart pipeline for a self-hosted service on top of an inactive project with no server-side precedent is a maintenance risk this spike doesn't recommend taking on, independent of the RAM question `@xenova/transformers` already answered.
+Not benchmarked (the `@xenova/transformers` result already disqualifies the offline approach, and time was better spent confirming this rather than re-deriving the same conclusion twice). On inspection: the canonical `mozilla/bergamot-translator` GitHub repository is explicitly marked **INACTIVE**. The actively-published package (`@browsermt/bergamot-translator`) is documented and designed for **browser/WASM client-side use** (worker-based, `delete()` cleanup pattern typical of WASM bindings) — there's no documented server-side Node deployment pattern or RAM benchmarks from the maintainers. Building a stable, resumable-after-restart pipeline for a self-hosted service on top of an inactive project with no server-side precedent is a maintenance risk this spike doesn't recommend taking on, independent of the RAM question `@xenova/transformers` already answered.
 
 ---
 

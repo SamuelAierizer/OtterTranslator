@@ -6,28 +6,30 @@ Microsoft Translator is primary; Google Cloud Translation Basic is the fallback 
 
 ## Local setup
 
-Use Node **22.12 or newer** and npm. SQLite installation may need Python, make and a C++ compiler when a prebuilt binary is unavailable.
+Use Node **22.12 or newer** and pnpm **10.34.9** (pinned in `package.json`). If Corepack is unavailable, install the pinned pnpm version using the [pnpm installation guide](https://pnpm.io/10.x/installation). Use pnpm for all dependency changes; installs through other package managers are rejected. Commit `pnpm-lock.yaml` with dependency changes. SQLite installation may need Python, make and a C++ compiler when a prebuilt binary is unavailable.
 
 ```sh
-npm ci
+corepack enable pnpm
+corepack install
+pnpm install --frozen-lockfile
 cp .env.example .env
 # Edit .env: EMAIL_ALLOWLIST, SMTP settings, MS_TRANSLATOR_KEY and region.
-npm run build
-npm run server
+pnpm run build
+pnpm run server
 ```
 
-Open http://localhost:3000. `ORIGIN` must exactly match the public browser origin. Production requires HTTPS. `npm run server:dev` runs the TypeScript source. The server commands load `.env`; direct CLI invocation requires exported environment variables or Node's `--env-file=.env` option.
+Open http://localhost:3000. `ORIGIN` must exactly match the public browser origin. Production requires HTTPS. `pnpm run server:dev` runs the TypeScript source. The server commands load `.env`; direct CLI invocation requires exported environment variables or Node's `--env-file=.env` option.
 
 For a complete **offline demonstration** without email/provider accounts:
 
 ```sh
 # Terminal 1: local SMTP sink; prints messages to this terminal, never sends them externally
-npm run mailbox
+pnpm run mailbox
 # In .env set EMAIL_ALLOWLIST=you@example.com, SMTP_HOST=127.0.0.1,
 # SMTP_PORT=2525, SMTP_REQUIRE_TLS=false, SMTP_FROM=you@example.com,
 # TRANSLATION_BACKEND=identity. Leave SMTP_USER/PASS empty.
 # Terminal 2
-npm run server
+pnpm run server
 ```
 
 Request a sign-in link, copy the URL printed by the local mailbox, open it, then upload a DOCX. **Identity mode checks formatting and the product flow; its output is not translated.** Restore `TRANSLATION_BACKEND=composite` and real SMTP settings for actual use.
@@ -66,10 +68,10 @@ Options: `--from` (en), `--to` (ro), `--backend composite|identity`, and `--revi
 ## Validation
 
 ```sh
-npm run build
-npm run check:tools
-npm test
-npm run test:browser
+pnpm run build
+pnpm run check:tools
+pnpm test
+pnpm run test:browser
 ```
 
 Unit and HTTP integration tests use fixtures, identity translation or mocked providers; they do not spend API credits. Browser tests use Playwright, installed Google Chrome by default (`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can override it). See PLAN.md for current execution evidence and remaining external checks. No deployment or paid subscription is implied.

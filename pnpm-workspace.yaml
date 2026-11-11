@@ -1,0 +1,4 @@
+# Native dependencies required by SQLite and the TypeScript dev/test runner.
+onlyBuiltDependencies:
+  - esbuild
+  - sqlite3
