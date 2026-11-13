@@ -1,15 +1,15 @@
-FROM node:22-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # Corepack selects the exact pnpm version pinned in package.json.
-RUN corepack enable pnpm && corepack install
+RUN npm install --global corepack@0.34.6 && corepack enable pnpm && corepack install
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
 RUN pnpm run build && pnpm prune --prod
 
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 ENV NODE_ENV=production PORT=3000 DB_PATH=/data/app.db OUTPUT_DIR=/data/outputs NODE_OPTIONS=--max-old-space-size=512
 WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules

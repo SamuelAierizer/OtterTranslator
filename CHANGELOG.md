@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Resolve all remaining engine backlog findings: preserve note references, text boxes, content controls, field instructions, symbols, tabs and literal tag text.
+- Send raw plain text to providers, repair spaced markers and restore source whitespace around breaks.
+- Batch provider requests, split only between complete tags/Unicode characters, retry transient rate limits and pace Azure by characters in a sliding window.
+- Keep one provider per document; only confirmed initial quota exhaustion triggers fallback.
+- Align pnpm pins, refresh the multipart lockfile and verify a clean installation with current Corepack and Node 24.
+- Preserve text order, formatting, line/page/column breaks and carriage returns when rebuilding paragraphs.
+- Rebuild formatted hyperlink contents without leaking internal tags into visible text.
+- Reject misaligned provider batches before translations shift into neighbouring paragraphs.
+- Reject crossed, reversed or nested format tags and retain source paragraphs safely.
+- Snapshot paragraph nodes before extraction to avoid repeated document traversal.
+- Leave break-only paragraphs out of provider requests.
+
+### Added
+- Regression and deterministic property tests for paragraph fidelity, tag structure and batch alignment.
+- [Translation engine findings](docs/findings.md), imported from Taiga's sandbox with open issues preserved.
+
 ## [0.1.1] - 2026-05-24
 
 ### Added

@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",
-    "@fastify/multipart": "^10.1.7",
+    "@fastify/multipart": "^10.1.8",
     "@xmldom/xmldom": "^0.9.12",
     "adm-zip": "^0.6.1",
     "fastify": "^5.12.8",
@@ -50,5 +50,5 @@
   "engines": {
     "node": ">=22.12"
   },
-  "packageManager": "pnpm@10.34.9"
+  "packageManager": "pnpm@10.34.8"
 }

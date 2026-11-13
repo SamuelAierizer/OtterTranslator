@@ -1,6 +1,6 @@
 import type { TranslationBackend } from '../backend.js';
 import type { QuotaStore } from '../types.js';
-import { QuotaExhaustedError, TranslationBlockedError } from '../errors.js';
+import { QuotaExhaustedError } from '../errors.js';
 import { InMemoryQuotaStore } from '../quota.js';
 import { MicrosoftTranslatorBackend, MS_MONTHLY_CHAR_LIMIT } from './ms-translator.js';
 import { GoogleCloudTranslationBackend, GOOGLE_CLOUD_MONTHLY_CHAR_LIMIT } from './google-cloud.js';
@@ -28,6 +28,7 @@ class CompositeBackend implements TranslationBackend {
   name = 'composite';
   private primary: TranslationBackend;
   private secondary: TranslationBackend;
+  private selected?: TranslationBackend;
 
   constructor(options: CreateBackendOptions) {
     const quota = options.quota ?? new InMemoryQuotaStore();
@@ -41,12 +42,17 @@ class CompositeBackend implements TranslationBackend {
     to: string,
     signal?: AbortSignal
   ): Promise<string[]> {
+    if (this.selected) return this.selected.translateBatch(texts, from, to, signal);
     try {
-      return await this.primary.translateBatch(texts, from, to, signal);
+      const result = await this.primary.translateBatch(texts, from, to, signal);
+      this.selected = this.primary;
+      return result;
     } catch (err) {
       if (err instanceof QuotaExhaustedError) {
         try {
-          return await this.secondary.translateBatch(texts, from, to, signal);
+          const result = await this.secondary.translateBatch(texts, from, to, signal);
+          this.selected = this.secondary;
+          return result;
         } catch (secondaryErr) {
           if (secondaryErr instanceof QuotaExhaustedError) {
             throw new QuotaExhaustedError('All translation backends exhausted');
@@ -54,16 +60,7 @@ class CompositeBackend implements TranslationBackend {
           throw secondaryErr;
         }
       }
-      if (err instanceof TranslationBlockedError) {
-        try {
-          return await this.secondary.translateBatch(texts, from, to, signal);
-        } catch (secondaryErr) {
-          if (secondaryErr instanceof TranslationBlockedError) {
-            throw new TranslationBlockedError('All translation backends blocked');
-          }
-          throw secondaryErr;
-        }
-      }
+
       throw err;
     }
   }

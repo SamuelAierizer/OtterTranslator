@@ -2,13 +2,14 @@
 
 A small, self-hosted DOCX translator for an allowlisted group. Server-rendered HTML and vanilla JavaScript provide email sign-in, upload, language selection, progress, recent jobs and downloads. Fastify, SQLite and one in-process worker keep the deployment small.
 
-Microsoft Translator is primary; Google Cloud Translation Basic is the fallback on quota exhaustion or provider blocking. The undocumented Google web endpoint and local Ollama are not supported by the v1 CLI/server. Translation credentials are required. No paid service is provisioned by this repository.
+Microsoft Translator is primary; Google Cloud Translation Basic is the fallback on confirmed quota exhaustion before a provider has been selected for the document. Temporary rate limits are retried; a document keeps one provider. The undocumented Google web endpoint and local Ollama are not supported by the v1 CLI/server. Translation credentials are required. No paid service is provisioned by this repository.
 
 ## Local setup
 
-Use Node **22.12 or newer** and pnpm **10.34.9** (pinned in `package.json`). If Corepack is unavailable, install the pinned pnpm version using the [pnpm installation guide](https://pnpm.io/10.x/installation). Use pnpm for all dependency changes; installs through other package managers are rejected. Commit `pnpm-lock.yaml` with dependency changes. SQLite installation may need Python, make and a C++ compiler when a prebuilt binary is unavailable.
+Use Node **24 LTS** (24.18.0 in `.tool-versions`) and pnpm **10.34.8** (pinned in `package.json`). If Corepack is unavailable, install the pinned pnpm version using the [pnpm installation guide](https://pnpm.io/10.x/installation). Use pnpm for all dependency changes; installs through other package managers are rejected. Commit `pnpm-lock.yaml` with dependency changes. SQLite installation may need Python, make and a C++ compiler when a prebuilt binary is unavailable.
 
 ```sh
+npm install --global corepack@0.34.6
 corepack enable pnpm
 corepack install
 pnpm install --frozen-lockfile
@@ -47,7 +48,7 @@ See [.env.example](.env.example) for every setting. Mail uses Nodemailer SMTP su
 
 ## Formatting and review
 
-The engine handles main document text, tables, headers/footers, footnotes/endnotes, hyperlinks, text boxes and inline-object positions. Formatting tags are validated: unsafe paragraphs retain their original source text; a result with all paragraphs rejected fails. Optional LLM review keeps machine translation when review fails or changes tags. Comments, SmartArt and metadata are not translated. Pagination can change as translated text grows; review output before distribution.
+The engine processes main document text, tables, headers/footers, footnotes/endnotes, hyperlinks and inline-object positions. Text boxes, note references, content-control wrappers, field instructions and inline symbols are preserved through reconstruction; see the [engine findings and regression coverage](docs/findings.md). Formatting tags are validated: unsafe paragraphs retain their original source text; a result with all paragraphs rejected fails. Optional LLM review keeps machine translation when review fails or changes tags. Comments, SmartArt and metadata are not translated. Pagination can change as translated text grows; review output before distribution.
 
 Server review is **off by default**, even with keys set. Enable `ENABLE_LLM_REVIEW=true` only after checking account billing, model access and privacy controls. Review uses configured Cerebras then Groq; absent keys skip that provider. Current account entitlements cannot be inferred from an API key. See [provider verification](docs/providers.md).
 

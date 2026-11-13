@@ -38,7 +38,7 @@ test('composite: the primary serves the request when it succeeds', async () => {
   assert.ok(calls[0].includes('microsofttranslator'));
 });
 
-test('composite: sustained 429s from both providers end as TranslationBlockedError', async () => {
+test('composite: sustained primary 429s end as TranslationBlockedError', async () => {
   const backend = createBackend(undefined, {
     msKey: 'ms',
     gcKey: 'gc',
@@ -52,8 +52,7 @@ test('composite: sustained 429s from both providers end as TranslationBlockedErr
         statusText: 'Too Many Requests',
       })) as typeof fetch,
     async () => {
-      // The first two 429s surface as QuotaExhaustedError and route to the overflow provider; the
-      // circuit breaker trips on the third, and with no provider left the job is blocked.
+      // Each call retries transient responses; persistent primary blocking never routes to Google.
       for (let attempt = 0; attempt < 5; attempt++) {
         try {
           await backend.translateBatch(['Hello'], 'en', 'hu');

@@ -64,3 +64,37 @@ export class RateLimiter {
     this.processing = false;
   }
 }
+
+/** Character-weighted sliding window shared by requests, including retries. */
+export class CharacterRateLimiter {
+  private entries: Array<{ at: number; chars: number }> = [];
+  private head = 0;
+  private used = 0;
+  private pending: Promise<void> = Promise.resolve();
+  constructor(
+    private limit = 33_000,
+    private windowMs = 60_000,
+    private now: () => number = Date.now,
+    private wait: (ms: number, signal?: AbortSignal) => Promise<void> = async (ms, signal) => {
+      const { setTimeout } = await import('node:timers/promises');
+      await setTimeout(ms, undefined, { signal });
+    }
+  ) {}
+  acquire(chars: number, signal?: AbortSignal): Promise<void> {
+    if (chars > this.limit || chars < 0) return Promise.reject(new Error('Request exceeds character rate window'));
+    const task = this.pending.then(async () => {
+      while (true) {
+        signal?.throwIfAborted();
+        const now = this.now();
+        while (this.head < this.entries.length && this.entries[this.head].at <= now - this.windowMs) this.used -= this.entries[this.head++].chars;
+        if (this.used + chars <= this.limit) {
+          if (this.head > 1024) { this.entries = this.entries.slice(this.head); this.head = 0; }
+          this.entries.push({ at: now, chars }); this.used += chars; return;
+        }
+        await this.wait(this.entries[this.head].at + this.windowMs - now, signal);
+      }
+    });
+    this.pending = task.catch(() => {});
+    return task;
+  }
+}

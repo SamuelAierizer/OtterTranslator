@@ -12,7 +12,8 @@ export interface TranslationBlock {
   text: string;
   partName: string;
   wpNode: any; // w:p paragraph node from XML DOM
-  styleMap: Map<string, any>; // styleId -> w:rPr (run properties)
+  /** Tag id -> metadata: fN -> w:rPr, hN -> container, oN -> preserved run; BREAKS_KEY -> original breaks. */
+  styleMap: Map<string, any>;
 }
 
 /**

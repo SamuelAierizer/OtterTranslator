@@ -15,47 +15,82 @@ function areRunPropertiesEqual(rPr1: any, rPr2: any): boolean {
   return s1 === s2;
 }
 
+/** Run children that `normalizeParagraph` knows how to carry across when merging two runs. */
+const MERGEABLE_RUN_CHILDREN = new Set(['w:rPr', 'w:t', 'w:br', 'w:cr', 'w:tab']);
+
+/** Line-break elements. Both are carried through translation as `[br/]`. */
+function isBreak(node: any): boolean {
+  return node.nodeName === 'w:br' || node.nodeName === 'w:cr';
+}
+
+/**
+ * Key in a block's styleMap holding the original break elements, in `[br/]` order. The tag itself
+ * carries no id, so the N-th `[br/]` in a translation is rebuilt from the N-th original break; that
+ * keeps page/column breaks (`w:type`) and `w:cr` from collapsing into plain line breaks.
+ */
+export const BREAKS_KEY = '__breaks';
+
+export interface BreakInfo {
+  /** Clone of the original `w:br` / `w:cr` element. */
+  node: any;
+  /**
+   * Formatting of the run the break came from, when that formatting is not already carried by an
+   * enclosing `[fN]` tag (i.e. a break alone in its own formatted run). Null otherwise.
+   */
+  rPr: any | null;
+}
+
 /**
  * Merge adjacent runs in a paragraph that have identical formatting.
  * This resolves the "split runs" issue common in DOCX.
+ *
+ * The merge must keep the reading order of the absorbed run's content: its text, breaks and tabs
+ * are appended after everything already in the current run. Text is only folded into an existing
+ * `w:t` when that `w:t` is the current run's last child; otherwise text would jump ahead of a
+ * break, e.g. "Line one<br/>" + "Line two" must not become "Line oneLine two<br/>".
  */
 export function normalizeParagraph(wpNode: any): void {
   const childNodes = Array.from(wpNode.childNodes);
 
-  for (let i = 0; i < childNodes.length - 1; i++) {
-    const curr = childNodes[i];
-    if ((curr as any).nodeName !== 'w:r') continue;
+  let i = 0;
+  while (i < childNodes.length - 1) {
+    const curr = childNodes[i] as any;
+    const next = childNodes[i + 1] as any;
 
-    const next = childNodes[i + 1];
-    if ((next as any).nodeName !== 'w:r') continue;
-
-    const rPr1 = Array.from((curr as any).childNodes).find((n: any) => n.nodeName === 'w:rPr');
-    const rPr2 = Array.from((next as any).childNodes).find((n: any) => n.nodeName === 'w:rPr');
-
-    const hasOnlyTextOrBreaks1 = Array.from((curr as any).childNodes).every((n: any) =>
-      n.nodeName === 'w:rPr' || n.nodeName === 'w:t' || n.nodeName === 'w:br' || n.nodeName === 'w:tab'
-    );
-    const hasOnlyTextOrBreaks2 = Array.from((next as any).childNodes).every((n: any) =>
-      n.nodeName === 'w:rPr' || n.nodeName === 'w:t' || n.nodeName === 'w:br' || n.nodeName === 'w:tab'
-    );
-
-    if (hasOnlyTextOrBreaks1 && hasOnlyTextOrBreaks2 && areRunPropertiesEqual(rPr1, rPr2)) {
-      const nextChildren = Array.from((next as any).childNodes);
-      for (const child of nextChildren) {
-        if ((child as any).nodeName === 'w:t') {
-          const currentT = Array.from((curr as any).childNodes).find((n: any) => n.nodeName === 'w:t');
-          if (currentT) {
-            (currentT as any).textContent += (child as any).textContent;
-          } else {
-            (curr as any).appendChild((child as any).cloneNode(true));
-          }
-        } else if ((child as any).nodeName === 'w:br' || (child as any).nodeName === 'w:tab') {
-          (curr as any).appendChild((child as any).cloneNode(true));
-        }
-      }
-      wpNode.removeChild(next);
-      childNodes.splice(i + 1, 1);
+    if (curr.nodeName !== 'w:r' || next.nodeName !== 'w:r') {
+      i++;
+      continue;
     }
+
+    const currChildren = Array.from(curr.childNodes) as any[];
+    const nextChildren = Array.from(next.childNodes) as any[];
+    const rPr1 = currChildren.find((n) => n.nodeName === 'w:rPr');
+    const rPr2 = nextChildren.find((n) => n.nodeName === 'w:rPr');
+
+    const mergeable =
+      currChildren.every((n) => MERGEABLE_RUN_CHILDREN.has(n.nodeName)) &&
+      nextChildren.every((n) => MERGEABLE_RUN_CHILDREN.has(n.nodeName)) &&
+      areRunPropertiesEqual(rPr1, rPr2);
+
+    if (!mergeable) {
+      i++;
+      continue;
+    }
+
+    for (const child of nextChildren) {
+      if (child.nodeName === 'w:rPr') continue;
+      const last = curr.lastChild as any;
+      if (child.nodeName === 'w:t' && last && last.nodeName === 'w:t') {
+        last.textContent = last.textContent + child.textContent;
+        // Joined text can gain leading/trailing spaces that Word would otherwise strip.
+        last.setAttribute('xml:space', 'preserve');
+      } else {
+        curr.appendChild(child);
+      }
+    }
+    wpNode.removeChild(next);
+    childNodes.splice(i + 1, 1);
+    // Stay on `curr`: it may also absorb the run that now follows it.
   }
 }
 
@@ -66,7 +101,15 @@ export function serializeParagraph(wpNode: any): { text: string; styleMap: Map<s
   normalizeParagraph(wpNode);
 
   const styleMap = new Map<string, any>();
+  const breaks: BreakInfo[] = [];
   const counters = { format: 1, container: 1, object: 1 };
+
+  function preserve(node: any): string {
+    const id = `o${counters.object++}`;
+    // Retain the live node: nested text-box paragraphs are updated before this is cloned.
+    styleMap.set(id, { nodeName: 'preserved-run', originalNode: node });
+    return `[${id}/]`;
+  }
 
   function processElement(node: any): string {
     const nodeName = (node as any).nodeName;
@@ -79,50 +122,61 @@ export function serializeParagraph(wpNode: any): { text: string; styleMap: Map<s
     } else if (nodeName === 'w:pPr') {
       return '';
     }
-    return '';
+    return node.nodeType === 1 ? preserve(node) : '';
   }
 
   function processRun(rNode: any): string {
     const runChildren = Array.from(rNode.childNodes);
-    const hasText = runChildren.some((n: any) => n.nodeName === 'w:t' && n.textContent.trim().length > 0);
-
-    if (!hasText) {
-      const hasDrawing = runChildren.some((n: any) => n.nodeName === 'w:drawing');
-      const hasObject = runChildren.some((n: any) => n.nodeName === 'w:object' || n.nodeName === 'w:pict');
-
-      if (hasDrawing || hasObject) {
-        const placeholderId = `o${counters.object++}`;
-        styleMap.set(placeholderId, {
-          nodeName: 'preserved-run',
-          originalNode: (rNode as any).cloneNode(true)
-        });
-        return `[${placeholderId}/]`;
-      }
-      return '';
-    }
+    const hasText = runChildren.some((n: any) => n.nodeName === 'w:t' && n.textContent.length > 0);
+    const hasBreak = runChildren.some(isBreak);
+    const hasTab = runChildren.some((n: any) => n.nodeName === 'w:tab');
+    if (!hasText && !hasBreak && !hasTab) return preserve(rNode);
 
     const rPr = runChildren.find((n: any) => n.nodeName === 'w:rPr');
-    let runContent = '';
+    const hasSignificantFormatting = rPr && Array.from((rPr as any).childNodes).some((n: any) => n.nodeName !== 'w:lang');
+    // A break-only run is emitted untagged, so an extra [fN] pair doesn't have to survive the
+    // translator just for a break; its formatting travels with the break instead.
+    const wrapInFormatTag = (hasText || hasTab) && hasSignificantFormatting;
+    const breakRPr = !wrapInFormatTag && hasSignificantFormatting ? rPr : null;
 
+    let runContent = '';
     for (const runChild of runChildren) {
       if ((runChild as any).nodeName === 'w:t') {
-        runContent += (runChild as any).textContent;
-      } else if ((runChild as any).nodeName === 'w:br') {
+        // Literal opening brackets travel as opaque text runs, never as tag syntax.
+        const pieces = (runChild as any).textContent.split('[');
+        runContent += pieces.map((piece: string, i: number) => {
+          if (!i) return piece;
+          const literal = rNode.cloneNode(false);
+          if (rPr) literal.appendChild((rPr as any).cloneNode(true));
+          const t = rNode.ownerDocument.createElementNS(rNode.namespaceURI, 'w:t');
+          t.textContent = '['; literal.appendChild(t);
+          const tag = preserve(literal);
+          styleMap.get(tag.slice(1, -2)).literal = '[';
+          return tag + piece;
+        }).join('');
+      } else if (isBreak(runChild)) {
+        breaks.push({
+          node: (runChild as any).cloneNode(true),
+          rPr: breakRPr ? (breakRPr as any).cloneNode(true) : null
+        });
         runContent += '[br/]';
       } else if ((runChild as any).nodeName === 'w:tab') {
         runContent += '\t';
+      } else if ((runChild as any).nodeName !== 'w:rPr') {
+        const fragment = rNode.cloneNode(false);
+        if (rPr) fragment.appendChild((rPr as any).cloneNode(true));
+        const tag = preserve(runChild);
+        styleMap.get(tag.slice(1, -2)).wrapper = fragment;
+        runContent += tag;
       }
     }
 
-    const hasSignificantFormatting = rPr && Array.from((rPr as any).childNodes).some((n: any) => n.nodeName !== 'w:lang');
-
-    if (hasSignificantFormatting) {
+    if (wrapInFormatTag) {
       const styleId = `f${counters.format++}`;
       styleMap.set(styleId, (rPr as any).cloneNode(true));
-      return `[${styleId}]${escapeXml(runContent)}[/${styleId}]`;
-    } else {
-      return escapeXml(runContent);
+      return `[${styleId}]${runContent}[/${styleId}]`;
     }
+    return runContent;
   }
 
   function processContainer(cNode: any, containerType: string): string {
@@ -134,19 +188,10 @@ export function serializeParagraph(wpNode: any): { text: string; styleMap: Map<s
       attributes: {}
     };
 
-    if (containerType === 'w:hyperlink') {
-      const rId = (cNode as any).getAttribute('r:id');
-      const anchor = (cNode as any).getAttribute('w:anchor');
-      if (rId) metadata.attributes['r:id'] = rId;
-      if (anchor) metadata.attributes['w:anchor'] = anchor;
-    } else if (containerType === 'w:sdt') {
-      const sdtPr = childNodes.find((n: any) => n.nodeName === 'w:sdtPr');
-      if (sdtPr) metadata.sdtPr = (sdtPr as any).cloneNode(true);
-    } else if (containerType === 'w:ins') {
-      const author = (cNode as any).getAttribute('w:author');
-      const date = (cNode as any).getAttribute('w:date');
-      if (author) metadata.attributes['w:author'] = author;
-      if (date) metadata.attributes['w:date'] = date;
+    for (const attr of Array.from(cNode.attributes) as any[]) metadata.attributes[attr.name] = attr.value;
+    if (containerType === 'w:sdt') {
+      metadata.properties = childNodes.filter((n: any) => n.nodeName !== 'w:sdtContent').map((n: any) => n.cloneNode(true));
+      metadata.contentTemplate = (childNodes.find((n: any) => n.nodeName === 'w:sdtContent') as any)?.cloneNode(false);
     }
 
     styleMap.set(containerId, metadata);
@@ -154,7 +199,9 @@ export function serializeParagraph(wpNode: any): { text: string; styleMap: Map<s
     let content = '';
     for (const child of childNodes) {
       const cn = (child as any).nodeName;
-      if (cn === 'w:r') {
+      if (cn === 'w:sdtPr' || cn === 'w:sdtEndPr') {
+        continue;
+      } else if (cn !== 'w:sdtContent' && cn !== 'w:p') {
         content += processElement(child);
       } else if (cn === 'w:sdtContent') {
         const contentChildren = Array.from((child as any).childNodes);
@@ -178,6 +225,8 @@ export function serializeParagraph(wpNode: any): { text: string; styleMap: Map<s
     taggedText += processElement(child);
   }
 
+  if (breaks.length > 0) styleMap.set(BREAKS_KEY, breaks);
+
   return {
     text: taggedText,
     styleMap
@@ -185,45 +234,24 @@ export function serializeParagraph(wpNode: any): { text: string; styleMap: Map<s
 }
 
 /**
- * Escapes XML special characters in raw strings.
- */
-function escapeXml(unsafe: string): string {
-  return unsafe.replace(/[<>&'"]/g, function (c: string) {
-    switch (c) {
-      case '<': return '&lt;';
-      case '>': return '&gt;';
-      case '&': return '&amp;';
-      case '\'': return '&apos;';
-      case '"': return '&quot;';
-      default: return c;
-    }
-  });
-}
-
-/**
- * Unescapes XML/HTML entities back to raw text.
- */
-export function unescapeXml(safe: string): string {
-  return safe.replace(/&amp;/g, '&')
-             .replace(/&lt;/g, '<')
-             .replace(/&gt;/g, '>')
-             .replace(/&quot;/g, '"')
-             .replace(/&apos;/g, "'");
-}
-
-/**
  * Extract all blocks (paragraphs with text) from a DOM object
  */
 export function extractBlocksFromDOM(dom: Document, partName: string): TranslationBlock[] {
   const blocks: TranslationBlock[] = [];
-  const paragraphs = dom.getElementsByTagName('w:p');
+  // Snapshot the list once. getElementsByTagName returns a *live* list: after any DOM change (run
+  // merging changes nearly every paragraph) reading it again re-walks the whole document, which
+  // made extraction quadratic. Serializing never adds or removes paragraphs, so a snapshot sees
+  // exactly the same paragraphs in the same order.
+  const paragraphs = Array.from(dom.getElementsByTagName('w:p'));
 
   for (let i = 0; i < paragraphs.length; i++) {
     const wpNode = paragraphs[i];
     const { text, styleMap } = serializeParagraph(wpNode);
 
-    // Only process paragraphs that contain some translatable text
-    if (text.trim().length > 0) {
+    // Only process paragraphs that contain some translatable text. Breaks and the container tags
+    // around them are not text: a paragraph holding just a page break, or a link around a break,
+    // is left untouched rather than sent to the provider.
+    if (text.replace(/\[br\/\]|\[\/?[fh]\d+\]|\[o\d+\/\]/g, '').trim().length > 0) {
       blocks.push({
         id: `${partName}_p_${i}`,
         partName,

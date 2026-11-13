@@ -21,3 +21,20 @@ The service persists provider counters in SQLite: Microsoft 2,000,000 and Google
 - [Groq data controls](https://console.groq.com/docs/your-data) distinguish default inference behavior, reliability/abuse logs (up to 30 days), and Zero Data Retention controls. Enable ZDR and check the organization's settings before confidential review. No-training and no-retention are different properties.
 
 These are published service statements, not account verification or a blanket regulatory guarantee. Server review is explicitly opt-in (`ENABLE_LLM_REVIEW=true`); translated text may include confidential content and should only be sent after the administrator checks the applicable provider settings. No accounts or paid services were created by this implementation.
+
+## Request pacing and batching — 2026-11-13
+
+Azure requests pack at most 30,000 UTF-16 units / 1,000 elements, under the API's
+50,000-character request cap. A process-wide sliding-minute log limits attempts to 33,000
+characters, conservatively following the F0 guidance to spread 2M/hour evenly
+([service limits](https://learn.microsoft.com/en-us/azure/ai-services/translator/service-limits)).
+This log resets on process restart; provider-side 429s still back off and stop after three attempts.
+Google Basic requests pack at most 10,000 UTF-16 units / 128 elements, leaving room under its
+100K-byte request cap even for JSON escaping ([quotas](https://docs.cloud.google.com/translate/quotas),
+[array limit](https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate)).
+
+429 responses and Google per-minute rate errors retry with Retry-After (seconds or HTTP date),
+otherwise exponential backoff. Confirmed Azure 403001 / Google daily-limit errors allow initial
+quota fallback; unrelated authorization errors and persistent temporary rate limits do not.
+After the first successful batch the composite keeps that provider for its lifetime (normally
+one document), preventing mid-document terminology changes. Retries retain budget reservations.
