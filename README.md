@@ -6,7 +6,7 @@ Microsoft Translator is primary; Google Cloud Translation Basic is the fallback 
 
 ## Local setup
 
-Use Node **24 LTS** (24.18.0 in `.tool-versions`) and pnpm **10.34.8** (pinned in `package.json`). If Corepack is unavailable, install the pinned pnpm version using the [pnpm installation guide](https://pnpm.io/10.x/installation). Use pnpm for all dependency changes; installs through other package managers are rejected. Commit `pnpm-lock.yaml` with dependency changes. SQLite installation may need Python, make and a C++ compiler when a prebuilt binary is unavailable.
+Use Node **24 LTS** (24.18.0 in `.tool-versions`) and pnpm **10.20.0** (pinned in `package.json`). If Corepack is unavailable, install the pinned pnpm version using the [pnpm installation guide](https://pnpm.io/10.x/installation). Use pnpm for all dependency changes; installs through other package managers are rejected. Commit `pnpm-lock.yaml` with dependency changes. SQLite installation may need Python, make and a C++ compiler when a prebuilt binary is unavailable.
 
 ```sh
 npm install --global corepack@0.34.6
